@@ -7,7 +7,8 @@ import {
   CommandLineIcon, 
   FolderIcon,
   CpuChipIcon,
-  SparklesIcon
+  SparklesIcon,
+  CogIcon
 } from '@heroicons/react/24/outline';
 import { ChatInterface } from '@/components/chat/ChatInterface';
 import { TerminalEmulator } from '@/components/terminal/TerminalEmulator';
