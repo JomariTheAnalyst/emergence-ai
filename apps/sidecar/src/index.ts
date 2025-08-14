@@ -36,7 +36,7 @@ const upload = multer({
 
 // Routes
 app.use('/api/health', healthRoutes);
-app.use('/api/files', upload.single('file'), fileRoutes);
+app.use('/api/files', fileRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/terminal', terminalRoutes);
 
