@@ -37,7 +37,7 @@ export default function Home() {
   const renderTabContent = () => {
     switch (activeTab) {
       case 'chat':
-        return <ChatInterface />;
+        return <ChatInterface llmConfig={llmConfig} />;
       case 'terminal':
         return <TerminalEmulator />;
       case 'files':
@@ -45,8 +45,14 @@ export default function Home() {
       case 'tasks':
         return <TaskManager />;
       default:
-        return <ChatInterface />;
+        return <ChatInterface llmConfig={llmConfig} />;
     }
+  };
+
+  const handleSaveSettings = async (config: typeof llmConfig) => {
+    setLlmConfig(config);
+    // Here you could also save to localStorage or send to backend
+    localStorage.setItem('llmConfig', JSON.stringify(config));
   };
 
   return (
