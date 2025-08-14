@@ -14,7 +14,7 @@ import { ChatInterface } from '@/components/chat/ChatInterface';
 import { TerminalEmulator } from '@/components/terminal/TerminalEmulator';
 import { FileExplorer } from '@/components/files/FileExplorer';
 import { TaskManager } from '@/components/tasks/TaskManager';
-import { WebSocketProvider } from '@/providers/WebSocketProvider';
+import { SettingsModal } from '@/components/settings/SettingsModal';
 
 const tabs = [
   { id: 'chat', name: 'Chat', icon: ChatBubbleLeftRightIcon },
