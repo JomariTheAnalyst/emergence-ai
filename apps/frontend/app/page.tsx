@@ -26,6 +26,13 @@ const tabs = [
 export default function Home() {
   const [activeTab, setActiveTab] = useState('chat');
   const [isConnected, setIsConnected] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [llmConfig, setLlmConfig] = useState({
+    provider: 'openai' as const,
+    model: 'gpt-4o-mini',
+    apiKey: '',
+    useEmergentKey: true
+  });
 
   const renderTabContent = () => {
     switch (activeTab) {
