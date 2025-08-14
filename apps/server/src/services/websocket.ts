@@ -1,301 +1,408 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import { IncomingMessage } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { WebSocketMessage, ChatStreamEvent, ToolExecutionEvent, TaskUpdateEvent, TerminalOutputEvent } from '@shadow/types';
+import { llmService } from './llm';
 
-interface ClientConnection {
+interface Client {
   id: string;
   ws: WebSocket;
   userId?: string;
-  taskId?: string;
   subscriptions: Set<string>;
+  lastSeen: Date;
+}
+
+interface WebSocketMessage {
+  type: string;
+  payload: any;
+  clientId?: string;
+  timestamp?: string;
 }
 
 export class WebSocketManager {
-  private clients = new Map<string, ClientConnection>();
-  private userConnections = new Map<string, Set<string>>();
-  private taskConnections = new Map<string, Set<string>>();
+  private clients: Map<string, Client> = new Map();
+  private userClients: Map<string, Set<string>> = new Map();
 
   constructor(private wss: WebSocketServer) {
     this.setupWebSocketServer();
+    this.startHeartbeat();
   }
 
   private setupWebSocketServer() {
-    this.wss.on('connection', (ws, request) => {
+    this.wss.on('connection', (ws: WebSocket, request: IncomingMessage) => {
       const clientId = uuidv4();
-      const client: ClientConnection = {
+      
+      const client: Client = {
         id: clientId,
         ws,
         subscriptions: new Set(),
+        lastSeen: new Date()
       };
 
       this.clients.set(clientId, client);
-      console.log(`WebSocket client connected: ${clientId}`);
+      console.log(`Client connected: ${clientId}`);
 
-      // Send welcome message
+      // Send connection confirmation
       this.sendToClient(clientId, {
         type: 'connection',
-        payload: { clientId },
-        timestamp: new Date(),
+        payload: { clientId, timestamp: new Date().toISOString() }
       });
 
       // Handle messages
-      ws.on('message', (data) => {
+      ws.on('message', async (data: Buffer) => {
         try {
-          const message = JSON.parse(data.toString());
-          this.handleClientMessage(clientId, message);
+          const message: WebSocketMessage = JSON.parse(data.toString());
+          await this.handleMessage(clientId, message);
         } catch (error) {
-          console.error('Invalid WebSocket message:', error);
+          console.error('Error parsing WebSocket message:', error);
           this.sendToClient(clientId, {
             type: 'error',
-            payload: { error: 'Invalid message format' },
-            timestamp: new Date(),
+            payload: { message: 'Invalid message format' }
           });
         }
       });
 
-      // Handle disconnect
+      // Handle disconnection
       ws.on('close', () => {
-        this.handleClientDisconnect(clientId);
+        this.handleDisconnection(clientId);
       });
 
       // Handle errors
       ws.on('error', (error) => {
         console.error(`WebSocket error for client ${clientId}:`, error);
-        this.handleClientDisconnect(clientId);
+        this.handleDisconnection(clientId);
       });
     });
   }
 
-  private handleClientMessage(clientId: string, message: any) {
+  private async handleMessage(clientId: string, message: WebSocketMessage) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    switch (message.type) {
-      case 'auth':
-        this.handleAuth(clientId, message.payload);
-        break;
-      
-      case 'subscribe':
-        this.handleSubscribe(clientId, message.payload);
-        break;
-      
-      case 'unsubscribe':
-        this.handleUnsubscribe(clientId, message.payload);
-        break;
-      
-      case 'ping':
-        this.sendToClient(clientId, {
-          type: 'pong',
-          payload: {},
-          timestamp: new Date(),
-        });
-        break;
-      
-      default:
-        console.warn(`Unknown message type: ${message.type}`);
+    client.lastSeen = new Date();
+
+    try {
+      switch (message.type) {
+        case 'auth':
+          await this.handleAuth(clientId, message.payload);
+          break;
+        
+        case 'chat_message':
+          await this.handleChatMessage(clientId, message.payload);
+          break;
+        
+        case 'subscribe':
+          this.handleSubscribe(clientId, message.payload);
+          break;
+        
+        case 'unsubscribe':
+          this.handleUnsubscribe(clientId, message.payload);
+          break;
+        
+        case 'terminal_command':
+          await this.handleTerminalCommand(clientId, message.payload);
+          break;
+        
+        case 'file_list':
+        case 'file_read':
+        case 'file_create':
+          await this.handleFileOperation(clientId, message.type, message.payload);
+          break;
+        
+        case 'task_create':
+        case 'task_action':
+          await this.handleTaskOperation(clientId, message.type, message.payload);
+          break;
+
+        case 'llm_config_update':
+          await this.handleLLMConfigUpdate(clientId, message.payload);
+          break;
+        
+        default:
+          console.log(`Unknown message type: ${message.type}`);
+      }
+    } catch (error) {
+      console.error(`Error handling message type ${message.type}:`, error);
+      this.sendToClient(clientId, {
+        type: 'error',
+        payload: { message: 'Failed to process message' }
+      });
     }
   }
 
-  private handleAuth(clientId: string, payload: { userId: string; taskId?: string }) {
+  private async handleAuth(clientId: string, payload: any) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    client.userId = payload.userId;
-    client.taskId = payload.taskId;
+    const { userId } = payload;
+    client.userId = userId;
 
-    // Add to user connections
-    if (!this.userConnections.has(payload.userId)) {
-      this.userConnections.set(payload.userId, new Set());
+    // Track user clients
+    if (!this.userClients.has(userId)) {
+      this.userClients.set(userId, new Set());
     }
-    this.userConnections.get(payload.userId)!.add(clientId);
-
-    // Add to task connections if specified
-    if (payload.taskId) {
-      if (!this.taskConnections.has(payload.taskId)) {
-        this.taskConnections.set(payload.taskId, new Set());
-      }
-      this.taskConnections.get(payload.taskId)!.add(clientId);
-    }
+    this.userClients.get(userId)!.add(clientId);
 
     this.sendToClient(clientId, {
       type: 'auth_success',
-      payload: { userId: payload.userId, taskId: payload.taskId },
-      timestamp: new Date(),
+      payload: { userId, clientId }
     });
 
-    console.log(`Client ${clientId} authenticated as user ${payload.userId}`);
+    console.log(`Client ${clientId} authenticated as user ${userId}`);
   }
 
-  private handleSubscribe(clientId: string, payload: { channels: string[] }) {
+  private async handleChatMessage(clientId: string, payload: any) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    payload.channels.forEach(channel => {
+    const { content, sessionId, config } = payload;
+    
+    try {
+      // Send acknowledgment
+      this.sendToClient(clientId, {
+        type: 'chat_message_received',
+        payload: { sessionId, timestamp: new Date().toISOString() }
+      });
+
+      // Get AI response
+      const response = await llmService.sendChatMessage(
+        sessionId || `session_${clientId}`,
+        content,
+        config
+      );
+
+      // Send AI response
+      this.sendToClient(clientId, {
+        type: 'chat_response',
+        payload: {
+          content: response,
+          role: 'assistant',
+          timestamp: new Date().toISOString(),
+          sessionId
+        }
+      });
+
+    } catch (error) {
+      console.error('Chat error:', error);
+      this.sendToClient(clientId, {
+        type: 'chat_error',
+        payload: { message: 'Failed to get AI response' }
+      });
+    }
+  }
+
+  private handleSubscribe(clientId: string, payload: any) {
+    const client = this.clients.get(clientId);
+    if (!client) return;
+
+    const { channels } = payload;
+    channels.forEach((channel: string) => {
       client.subscriptions.add(channel);
     });
 
     this.sendToClient(clientId, {
-      type: 'subscription_success',
-      payload: { channels: payload.channels },
-      timestamp: new Date(),
+      type: 'subscribed',
+      payload: { channels }
     });
   }
 
-  private handleUnsubscribe(clientId: string, payload: { channels: string[] }) {
+  private handleUnsubscribe(clientId: string, payload: any) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    payload.channels.forEach(channel => {
+    const { channels } = payload;
+    channels.forEach((channel: string) => {
       client.subscriptions.delete(channel);
     });
 
     this.sendToClient(clientId, {
-      type: 'unsubscription_success',
-      payload: { channels: payload.channels },
-      timestamp: new Date(),
+      type: 'unsubscribed',
+      payload: { channels }
     });
   }
 
-  private handleClientDisconnect(clientId: string) {
+  private async handleTerminalCommand(clientId: string, payload: any) {
+    const { command, workingDir, sessionId } = payload;
+    
+    // Mock terminal execution for demo
+    this.sendToClient(clientId, {
+      type: 'terminal_output',
+      payload: {
+        sessionId,
+        output: `$ ${command}\nExecuting command...\nCommand completed successfully.\n`,
+        exitCode: 0
+      }
+    });
+  }
+
+  private async handleFileOperation(clientId: string, operation: string, payload: any) {
+    // Mock file operations for demo
+    switch (operation) {
+      case 'file_list':
+        this.sendToClient(clientId, {
+          type: 'file_list_response',
+          payload: {
+            path: payload.path,
+            files: [
+              { name: 'README.md', type: 'file', size: 1024 },
+              { name: 'src', type: 'directory' },
+              { name: 'package.json', type: 'file', size: 512 }
+            ]
+          }
+        });
+        break;
+      
+      case 'file_read':
+        this.sendToClient(clientId, {
+          type: 'file_content',
+          payload: {
+            path: payload.path,
+            content: '// Demo file content\nconsole.log("Hello from Shadow!");',
+            language: 'javascript'
+          }
+        });
+        break;
+      
+      case 'file_create':
+        this.sendToClient(clientId, {
+          type: 'file_created',
+          payload: {
+            path: payload.path,
+            type: payload.type
+          }
+        });
+        break;
+    }
+  }
+
+  private async handleTaskOperation(clientId: string, operation: string, payload: any) {
+    // Mock task operations for demo
+    switch (operation) {
+      case 'task_create':
+        this.sendToClient(clientId, {
+          type: 'task_created',
+          payload: {
+            ...payload,
+            id: Date.now().toString(),
+            status: 'pending',
+            createdAt: new Date().toISOString()
+          }
+        });
+        break;
+      
+      case 'task_action':
+        this.sendToClient(clientId, {
+          type: 'task_updated',
+          payload: {
+            taskId: payload.taskId,
+            action: payload.action,
+            timestamp: new Date().toISOString()
+          }
+        });
+        break;
+    }
+  }
+
+  private async handleLLMConfigUpdate(clientId: string, payload: any) {
+    const { sessionId, config } = payload;
+    
+    try {
+      llmService.updateConfig(sessionId || `session_${clientId}`, config);
+      
+      this.sendToClient(clientId, {
+        type: 'llm_config_updated',
+        payload: { 
+          message: 'LLM configuration updated successfully',
+          config 
+        }
+      });
+    } catch (error) {
+      this.sendToClient(clientId, {
+        type: 'llm_config_error',
+        payload: { message: 'Failed to update LLM configuration' }
+      });
+    }
+  }
+
+  private handleDisconnection(clientId: string) {
     const client = this.clients.get(clientId);
     if (!client) return;
 
-    // Remove from user connections
+    // Remove from user clients
     if (client.userId) {
-      const userClients = this.userConnections.get(client.userId);
-      if (userClients) {
-        userClients.delete(clientId);
-        if (userClients.size === 0) {
-          this.userConnections.delete(client.userId);
-        }
-      }
-    }
-
-    // Remove from task connections
-    if (client.taskId) {
-      const taskClients = this.taskConnections.get(client.taskId);
-      if (taskClients) {
-        taskClients.delete(clientId);
-        if (taskClients.size === 0) {
-          this.taskConnections.delete(client.taskId);
+      const userClientSet = this.userClients.get(client.userId);
+      if (userClientSet) {
+        userClientSet.delete(clientId);
+        if (userClientSet.size === 0) {
+          this.userClients.delete(client.userId);
         }
       }
     }
 
     this.clients.delete(clientId);
-    console.log(`WebSocket client disconnected: ${clientId}`);
+    console.log(`Client disconnected: ${clientId}`);
   }
 
-  // Public methods for sending messages
-
-  public sendToClient(clientId: string, message: WebSocketMessage) {
+  private sendToClient(clientId: string, message: WebSocketMessage) {
     const client = this.clients.get(clientId);
-    if (!client || client.ws.readyState !== WebSocket.OPEN) {
-      return false;
-    }
+    if (!client || client.ws.readyState !== WebSocket.OPEN) return;
 
     try {
-      client.ws.send(JSON.stringify(message));
-      return true;
+      client.ws.send(JSON.stringify({
+        ...message,
+        timestamp: new Date().toISOString()
+      }));
     } catch (error) {
-      console.error(`Failed to send message to client ${clientId}:`, error);
-      return false;
+      console.error(`Error sending message to client ${clientId}:`, error);
+      this.handleDisconnection(clientId);
     }
+  }
+
+  public broadcast(message: WebSocketMessage, channel?: string) {
+    this.clients.forEach((client, clientId) => {
+      if (channel && !client.subscriptions.has(channel)) return;
+      this.sendToClient(clientId, message);
+    });
   }
 
   public sendToUser(userId: string, message: WebSocketMessage) {
-    const userClients = this.userConnections.get(userId);
-    if (!userClients) return 0;
+    const userClientSet = this.userClients.get(userId);
+    if (!userClientSet) return;
 
-    let sentCount = 0;
-    userClients.forEach(clientId => {
-      if (this.sendToClient(clientId, message)) {
-        sentCount++;
-      }
+    userClientSet.forEach(clientId => {
+      this.sendToClient(clientId, message);
     });
-
-    return sentCount;
   }
 
-  public sendToTask(taskId: string, message: WebSocketMessage) {
-    const taskClients = this.taskConnections.get(taskId);
-    if (!taskClients) return 0;
+  private startHeartbeat() {
+    setInterval(() => {
+      const now = new Date();
+      const staleClients: string[] = [];
 
-    let sentCount = 0;
-    taskClients.forEach(clientId => {
-      if (this.sendToClient(clientId, message)) {
-        sentCount++;
-      }
-    });
+      this.clients.forEach((client, clientId) => {
+        const timeSinceLastSeen = now.getTime() - client.lastSeen.getTime();
+        
+        if (timeSinceLastSeen > 5 * 60 * 1000) { // 5 minutes
+          staleClients.push(clientId);
+        } else if (client.ws.readyState === WebSocket.OPEN) {
+          // Send ping
+          client.ws.ping();
+        }
+      });
 
-    return sentCount;
+      // Remove stale clients
+      staleClients.forEach(clientId => {
+        this.handleDisconnection(clientId);
+      });
+    }, 30000); // Check every 30 seconds
   }
 
-  public broadcast(message: WebSocketMessage, filter?: (client: ClientConnection) => boolean) {
-    let sentCount = 0;
-    
-    this.clients.forEach(client => {
-      if (filter && !filter(client)) return;
-      
-      if (this.sendToClient(client.id, message)) {
-        sentCount++;
-      }
-    });
-
-    return sentCount;
-  }
-
-  public sendChatStream(event: ChatStreamEvent, userId?: string, taskId?: string) {
-    if (taskId) {
-      return this.sendToTask(taskId, event);
-    } else if (userId) {
-      return this.sendToUser(userId, event);
-    } else {
-      return this.broadcast(event);
-    }
-  }
-
-  public sendToolExecution(event: ToolExecutionEvent) {
-    return this.sendToTask(event.payload.taskId, event);
-  }
-
-  public sendTaskUpdate(event: TaskUpdateEvent) {
-    return this.sendToTask(event.payload.taskId, event);
-  }
-
-  public sendTerminalOutput(event: TerminalOutputEvent, userId?: string) {
-    if (userId) {
-      return this.sendToUser(userId, event);
-    } else {
-      return this.broadcast(event);
-    }
-  }
-
-  // Utility methods
-
-  public getConnectedClients(): number {
-    return this.clients.size;
-  }
-
-  public getConnectedUsers(): number {
-    return this.userConnections.size;
-  }
-
-  public getActiveTasks(): number {
-    return this.taskConnections.size;
-  }
-
-  public getClientInfo(clientId: string): ClientConnection | undefined {
-    return this.clients.get(clientId);
-  }
-
-  public getUserClients(userId: string): string[] {
-    const userClients = this.userConnections.get(userId);
-    return userClients ? Array.from(userClients) : [];
-  }
-
-  public getTaskClients(taskId: string): string[] {
-    const taskClients = this.taskConnections.get(taskId);
-    return taskClients ? Array.from(taskClients) : [];
+  public getStats() {
+    return {
+      totalClients: this.clients.size,
+      authenticatedUsers: this.userClients.size,
+      clientsByUser: Object.fromEntries(
+        Array.from(this.userClients.entries()).map(([userId, clients]) => [userId, clients.size])
+      )
+    };
   }
 }
