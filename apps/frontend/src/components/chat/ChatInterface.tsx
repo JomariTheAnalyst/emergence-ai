@@ -49,6 +49,40 @@ export function ChatInterface({ llmConfig }: ChatInterfaceProps) {
     scrollToBottom();
   }, [messages]);
 
+  useEffect(() => {
+    // Listen for WebSocket chat responses
+    const handleChatResponse = (event: any) => {
+      const { content, timestamp } = event.detail;
+      const assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content,
+        role: 'assistant',
+        timestamp: new Date(timestamp),
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+      setIsLoading(false);
+    };
+
+    const handleChatError = (event: any) => {
+      const errorMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        content: 'Sorry, I encountered an error processing your message. Please check your configuration and try again.',
+        role: 'assistant',
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, errorMessage]);
+      setIsLoading(false);
+    };
+
+    window.addEventListener('chat_response', handleChatResponse);
+    window.addEventListener('chat_error', handleChatError);
+
+    return () => {
+      window.removeEventListener('chat_response', handleChatResponse);
+      window.removeEventListener('chat_error', handleChatError);
+    };
+  }, []);
+
   const handleSendMessage = async () => {
     if (!inputValue.trim() || isLoading) return;
 
