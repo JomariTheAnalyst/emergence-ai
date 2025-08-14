@@ -18,7 +18,16 @@ interface Message {
   isStreaming?: boolean;
 }
 
-export function ChatInterface() {
+interface ChatInterfaceProps {
+  llmConfig: {
+    provider: 'openai' | 'anthropic' | 'gemini';
+    model: string;
+    apiKey: string;
+    useEmergentKey: boolean;
+  };
+}
+
+export function ChatInterface({ llmConfig }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       id: '1',
