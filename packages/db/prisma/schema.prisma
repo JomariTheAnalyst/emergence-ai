@@ -69,7 +69,7 @@ model Task {
 }
 
 model TaskLog {
-  id        String   @id @default(uuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   level     LogLevel
   message   String
   metadata  Json?
@@ -77,13 +77,13 @@ model TaskLog {
 
   // Relations
   task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  taskId String
+  taskId String @db.ObjectId
 
   @@map("task_logs")
 }
 
 model ChatMessage {
-  id        String   @id @default(uuid())
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
   content   String
   role      String   // 'user' | 'assistant' | 'system'
   timestamp DateTime @default(now())
@@ -91,15 +91,15 @@ model ChatMessage {
 
   // Relations
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId String
+  userId String @db.ObjectId
   task   Task?  @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  taskId String?
+  taskId String? @db.ObjectId
 
   @@map("chat_messages")
 }
 
 model Memory {
-  id      String     @id @default(uuid())
+  id      String     @id @default(auto()) @map("_id") @db.ObjectId
   type    MemoryType
   title   String
   content String
@@ -109,15 +109,15 @@ model Memory {
 
   // Relations
   repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  repositoryId String
+  repositoryId String     @db.ObjectId
   user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String
+  userId       String     @db.ObjectId
 
   @@map("memories")
 }
 
 model ToolCall {
-  id         String   @id @default(uuid())
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
   name       String
   parameters Json
   result     Json?
@@ -128,7 +128,7 @@ model ToolCall {
 }
 
 model FileEmbedding {
-  id         String   @id @default(uuid())
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
   filePath   String
   content    String
   embedding  Float[]
@@ -141,7 +141,7 @@ model FileEmbedding {
 }
 
 model TerminalSession {
-  id          String   @id @default(uuid())
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
   sessionId   String   @unique
   workingDir  String
   environment Json?
