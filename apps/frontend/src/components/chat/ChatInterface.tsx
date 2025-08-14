@@ -63,30 +63,64 @@ export function ChatInterface({ llmConfig }: ChatInterfaceProps) {
     setInputValue('');
     setIsLoading(true);
 
-    // Send message via WebSocket if connected
-    if (isConnected) {
-      sendMessage({
-        type: 'chat_message',
-        payload: {
-          content: userMessage.content,
-          role: 'user',
-          timestamp: userMessage.timestamp,
-        }
-      });
-    }
+    try {
+      // Send message via WebSocket if connected
+      if (isConnected) {
+        sendMessage({
+          type: 'chat_message',
+          payload: {
+            content: userMessage.content,
+            sessionId: 'chat-session',
+            config: llmConfig.useEmergentKey ? undefined : {
+              provider: llmConfig.provider,
+              model: llmConfig.model,
+              apiKey: llmConfig.apiKey,
+              useEmergentKey: false
+            }
+          }
+        });
+      } else {
+        // Fallback: direct API call
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/chat/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: userMessage.content,
+            sessionId: 'chat-session',
+            config: llmConfig.useEmergentKey ? undefined : {
+              provider: llmConfig.provider,
+              model: llmConfig.model,
+              apiKey: llmConfig.apiKey,
+              useEmergentKey: false
+            }
+          })
+        });
 
-    // Simulate AI response for now
-    setTimeout(() => {
-      const assistantMessage: Message = {
+        if (response.ok) {
+          const data = await response.json();
+          const assistantMessage: Message = {
+            id: (Date.now() + 1).toString(),
+            content: data.response,
+            role: 'assistant',
+            timestamp: new Date(),
+          };
+          setMessages(prev => [...prev, assistantMessage]);
+        } else {
+          throw new Error('Failed to get response');
+        }
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
-        content: `I understand you want to work on: "${userMessage.content}". I'm currently setting up the necessary tools and analyzing your request. This is a demo response - full LLM integration will be available once the agent system is complete.`,
+        content: 'Sorry, I encountered an error processing your message. Please check your configuration and try again.',
         role: 'assistant',
         timestamp: new Date(),
       };
-
-      setMessages(prev => [...prev, assistantMessage]);
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
       setIsLoading(false);
-    }, 1500);
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
