@@ -1,0 +1,32 @@
+{
+  "name": "shadow",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types",
+    "generate": "turbo run generate",
+    "db:push": "turbo run db:push",
+    "db:push:reset": "turbo run db:push:reset",
+    "db:studio": "turbo run db:studio",
+    "db:migrate:dev": "turbo run db:migrate:dev",
+    "clean": "turbo run clean"
+  },
+  "devDependencies": {
+    "@turbo/gen": "^1.10.12",
+    "prettier": "^3.0.0",
+    "turbo": "^1.10.12",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "npm@9.0.0"
+}
