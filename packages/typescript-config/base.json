@@ -18,7 +18,7 @@
     "strictNullChecks": true,
     "target": "es2022",
     "module": "ESNext",
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM"],
     "allowJs": true,
     "checkJs": false,
     "incremental": true,
