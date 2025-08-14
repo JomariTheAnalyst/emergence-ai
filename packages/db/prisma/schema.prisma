@@ -46,7 +46,7 @@ model Repository {
 }
 
 model Task {
-  id            String      @id @default(uuid())
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
   title         String
   description   String?
   status        TaskStatus  @default(PENDING)
@@ -59,9 +59,9 @@ model Task {
 
   // Relations
   repository   Repository    @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  repositoryId String
+  repositoryId String        @db.ObjectId
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String
+  userId       String        @db.ObjectId
   logs         TaskLog[]
   chatMessages ChatMessage[]
 
