@@ -36,8 +36,13 @@ const upload = multer({
 
 // Routes
 app.use('/api/health', healthRoutes);
-app.use('/api/files', upload.single('file'));
-app.use('/api/files', fileRoutes);
+
+// File upload configuration for file routes
+const fileRouter = express.Router();
+fileRouter.use(upload.single('file'));
+fileRouter.use('/', fileRoutes);
+app.use('/api/files', fileRouter);
+
 app.use('/api/search', searchRoutes);
 app.use('/api/terminal', terminalRoutes);
 
