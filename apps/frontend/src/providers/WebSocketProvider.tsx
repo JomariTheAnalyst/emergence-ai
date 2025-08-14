@@ -53,8 +53,12 @@ export function WebSocketProvider({ children, onConnectionChange }: WebSocketPro
               case 'connection':
                 console.log('Connected with client ID:', message.payload.clientId);
                 break;
-              case 'chat_stream':
-                // Handle chat streaming
+              case 'chat_response':
+                // Dispatch custom event for chat response
+                window.dispatchEvent(new CustomEvent('chat_response', { detail: message.payload }));
+                break;
+              case 'chat_error':
+                window.dispatchEvent(new CustomEvent('chat_error', { detail: message.payload }));
                 break;
               case 'tool_execution':
                 // Handle tool execution updates
