@@ -156,6 +156,14 @@ export default function Home() {
             </motion.div>
           </main>
         </div>
+
+        {/* Settings Modal */}
+        <SettingsModal
+          isOpen={showSettings}
+          onClose={() => setShowSettings(false)}
+          onSave={handleSaveSettings}
+          currentConfig={llmConfig}
+        />
       </div>
     </WebSocketProvider>
   );
