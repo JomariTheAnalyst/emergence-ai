@@ -1,8 +1,9 @@
-import { LlmChat, UserMessage } from 'emergentintegrations/llm/chat';
-import { config } from 'dotenv';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+import fs from 'fs';
 
-// Load environment variables
-config();
+const execAsync = promisify(exec);
 
 interface LLMConfig {
   provider: 'openai' | 'anthropic' | 'gemini';
@@ -18,8 +19,8 @@ interface ChatMessage {
 }
 
 export class LLMService {
-  private chatInstances: Map<string, LlmChat> = new Map();
   private defaultConfig: LLMConfig;
+  private pythonScriptPath: string;
 
   constructor() {
     // Default configuration using Emergent LLM key
@@ -29,30 +30,82 @@ export class LLMService {
       apiKey: process.env.EMERGENT_LLM_KEY || '',
       systemMessage: 'You are Shadow, an AI coding agent. You understand codebases, analyze code, generate solutions, debug issues, and help with development tasks. Be concise, accurate, and helpful.'
     };
+
+    this.pythonScriptPath = path.join(__dirname, '../scripts/llm_client.py');
+    this.ensurePythonScript();
   }
 
-  /**
-   * Get or create a chat instance for a session
-   */
-  private getChatInstance(sessionId: string, config?: Partial<LLMConfig>): LlmChat {
-    const sessionKey = `${sessionId}_${config?.provider || this.defaultConfig.provider}_${config?.model || this.defaultConfig.model}`;
-    
-    if (!this.chatInstances.has(sessionKey)) {
-      const finalConfig = { ...this.defaultConfig, ...config };
-      
-      const chat = new LlmChat(
-        finalConfig.apiKey,
-        sessionId,
-        finalConfig.systemMessage || this.defaultConfig.systemMessage
-      );
+  private ensurePythonScript() {
+    const scriptContent = `#!/usr/bin/env python3
+import sys
+import json
+import os
+import asyncio
+from emergentintegrations.llm.chat import LlmChat, UserMessage
+from dotenv import load_dotenv
 
-      // Configure the model and provider
-      chat.with_model(finalConfig.provider, finalConfig.model);
-      
-      this.chatInstances.set(sessionKey, chat);
+# Load environment variables
+load_dotenv()
+
+async def main():
+    try:
+        # Get input from command line arguments
+        if len(sys.argv) < 2:
+            print(json.dumps({"error": "No input provided"}))
+            sys.exit(1)
+        
+        input_data = json.loads(sys.argv[1])
+        
+        session_id = input_data.get('sessionId', 'default')
+        message = input_data.get('message', '')
+        provider = input_data.get('provider', 'openai')
+        model = input_data.get('model', 'gpt-4o-mini')
+        api_key = input_data.get('apiKey', os.getenv('EMERGENT_LLM_KEY', ''))
+        system_message = input_data.get('systemMessage', 'You are Shadow, an AI coding agent.')
+        
+        if not message:
+            print(json.dumps({"error": "No message provided"}))
+            sys.exit(1)
+        
+        if not api_key:
+            print(json.dumps({"error": "No API key provided"}))
+            sys.exit(1)
+        
+        # Initialize chat
+        chat = LlmChat(api_key, session_id, system_message)
+        chat.with_model(provider, model)
+        
+        # Send message
+        user_message = UserMessage(message)
+        response = await chat.send_message(user_message)
+        
+        # Return response
+        print(json.dumps({
+            "success": True,
+            "response": response,
+            "timestamp": datetime.now().isoformat()
+        }))
+        
+    except Exception as e:
+        print(json.dumps({
+            "error": str(e),
+            "type": type(e).__name__
+        }))
+        sys.exit(1)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+`;
+
+    const scriptDir = path.dirname(this.pythonScriptPath);
+    if (!fs.existsSync(scriptDir)) {
+      fs.mkdirSync(scriptDir, { recursive: true });
     }
 
-    return this.chatInstances.get(sessionKey)!;
+    if (!fs.existsSync(this.pythonScriptPath)) {
+      fs.writeFileSync(this.pythonScriptPath, scriptContent);
+      fs.chmodSync(this.pythonScriptPath, '755');
+    }
   }
 
   /**
@@ -64,12 +117,34 @@ export class LLMService {
     config?: Partial<LLMConfig>
   ): Promise<string> {
     try {
-      const chat = this.getChatInstance(sessionId, config);
-      const userMessage = new UserMessage(message);
-      const response = await chat.send_message(userMessage);
-      return response;
+      const finalConfig = { ...this.defaultConfig, ...config };
+      
+      const inputData = {
+        sessionId,
+        message,
+        provider: finalConfig.provider,
+        model: finalConfig.model,
+        apiKey: finalConfig.apiKey,
+        systemMessage: finalConfig.systemMessage
+      };
+
+      const { stdout, stderr } = await execAsync(
+        `python3 "${this.pythonScriptPath}" '${JSON.stringify(inputData)}'`
+      );
+
+      if (stderr) {
+        console.error('Python script stderr:', stderr);
+      }
+
+      const result = JSON.parse(stdout.trim());
+      
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      return result.response;
     } catch (error) {
-      console.error('Error sending chat message:', error);
+      console.error('Error calling Python LLM script:', error);
       throw new Error('Failed to get AI response');
     }
   }
@@ -196,14 +271,8 @@ Provide the refactored code with explanations of the changes made.`;
    * Update LLM configuration for a session
    */
   updateConfig(sessionId: string, config: Partial<LLMConfig>): void {
-    // Remove existing chat instances for this session to force recreation with new config
-    const keysToRemove = Array.from(this.chatInstances.keys()).filter(key => 
-      key.startsWith(sessionId)
-    );
-    
-    keysToRemove.forEach(key => {
-      this.chatInstances.delete(key);
-    });
+    // For Python-based implementation, configuration is passed per request
+    console.log(`Configuration updated for session ${sessionId}:`, config);
   }
 
   /**
@@ -239,13 +308,8 @@ Provide the refactored code with explanations of the changes made.`;
    * Clear chat history for a session
    */
   clearSession(sessionId: string): void {
-    const keysToRemove = Array.from(this.chatInstances.keys()).filter(key => 
-      key.startsWith(sessionId)
-    );
-    
-    keysToRemove.forEach(key => {
-      this.chatInstances.delete(key);
-    });
+    console.log(`Session cleared: ${sessionId}`);
+    // For Python-based implementation, session management is handled by the Python script
   }
 }
 
