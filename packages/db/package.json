@@ -1,0 +1,26 @@
+{
+  "name": "@shadow/db",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:push:reset": "prisma db push --force-reset",
+    "db:studio": "prisma studio",
+    "db:migrate:dev": "prisma migrate dev",
+    "lint": "eslint .",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.0.0"
+  },
+  "devDependencies": {
+    "@shadow/typescript-config": "*",
+    "prisma": "^5.0.0",
+    "typescript": "^5.0.0"
+  }
+}
