@@ -82,6 +82,16 @@ export default function Home() {
                     {isConnected ? 'Connected' : 'Disconnected'}
                   </span>
                 </div>
+                
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={() => setShowSettings(true)}
+                  className="p-2 bg-shadow-700 hover:bg-shadow-600 text-white rounded-lg transition-colors"
+                  title="Settings"
+                >
+                  <CogIcon className="h-4 w-4" />
+                </motion.button>
               </div>
             </div>
           </div>
