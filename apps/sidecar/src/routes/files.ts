@@ -1,348 +1,170 @@
 import { Router } from 'express';
 import fs from 'fs-extra';
 import path from 'path';
-import { CommandValidator, PathValidator } from '@shadow/command-security';
-import { FileInfo, FileContent, SecurityError } from '@shadow/types';
 import mime from 'mime-types';
-import chokidar from 'chokidar';
 
 const router = Router();
 const workspaceDir = process.env.WORKSPACE_DIR || '/tmp/shadow-workspace';
-const validator = new CommandValidator(workspaceDir);
 
 // Ensure workspace directory exists
 fs.ensureDirSync(workspaceDir);
 
-// File watcher for live updates
-const watcher = chokidar.watch(workspaceDir, {
-  ignored: /(^|[\/\\])\../, // ignore dotfiles
-  persistent: true,
-  ignoreInitial: true,
-});
-
-watcher
-  .on('add', path => console.log(`File ${path} has been added`))
-  .on('change', path => console.log(`File ${path} has been changed`))
-  .on('unlink', path => console.log(`File ${path} has been removed`));
-
-// GET /api/files/list - List directory contents
+// List files in directory
 router.get('/list', async (req, res) => {
   try {
-    const dirPath = req.query.path as string || '';
-    const fullPath = path.resolve(workspaceDir, dirPath);
-
-    // Validate path
-    const pathValidation = validator.validatePath(fullPath);
-    if (!pathValidation.valid) {
-      return res.status(403).json({ error: pathValidation.error });
+    const { path: requestPath = '.' } = req.query;
+    const fullPath = path.resolve(workspaceDir, requestPath as string);
+    
+    // Security check - ensure path is within workspace
+    if (!fullPath.startsWith(workspaceDir)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-
-    const exists = await fs.pathExists(fullPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'Directory not found' });
+    
+    const stats = await fs.stat(fullPath);
+    
+    if (stats.isDirectory()) {
+      const items = await fs.readdir(fullPath);
+      const fileList = await Promise.all(
+        items.map(async (item) => {
+          const itemPath = path.join(fullPath, item);
+          const itemStats = await fs.stat(itemPath);
+          
+          return {
+            name: item,
+            type: itemStats.isDirectory() ? 'directory' : 'file',
+            size: itemStats.isFile() ? itemStats.size : undefined,
+            modified: itemStats.mtime,
+            path: path.relative(workspaceDir, itemPath)
+          };
+        })
+      );
+      
+      res.json({ files: fileList, path: path.relative(workspaceDir, fullPath) });
+    } else {
+      res.status(400).json({ error: 'Path is not a directory' });
     }
-
-    const stat = await fs.stat(fullPath);
-    if (!stat.isDirectory()) {
-      return res.status(400).json({ error: 'Path is not a directory' });
-    }
-
-    const entries = await fs.readdir(fullPath, { withFileTypes: true });
-    const files: FileInfo[] = [];
-
-    for (const entry of entries) {
-      const entryPath = path.join(fullPath, entry.name);
-      const entryStat = await fs.stat(entryPath);
-      const relativePath = path.relative(workspaceDir, entryPath);
-
-      files.push({
-        path: relativePath,
-        name: entry.name,
-        type: entry.isDirectory() ? 'directory' : 'file',
-        size: entry.isFile() ? entryStat.size : undefined,
-        lastModified: entryStat.mtime,
-        permissions: (entryStat.mode & parseInt('777', 8)).toString(8),
-      });
-    }
-
-    // Sort: directories first, then files, both alphabetically
-    files.sort((a, b) => {
-      if (a.type !== b.type) {
-        return a.type === 'directory' ? -1 : 1;
-      }
-      return a.name.localeCompare(b.name);
-    });
-
-    res.json({ files });
   } catch (error) {
-    console.error('Error listing directory:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
+    console.error('Error listing files:', error);
+    res.status(500).json({ error: 'Failed to list files' });
   }
 });
 
-// GET /api/files/read - Read file contents
+// Read file content
 router.get('/read', async (req, res) => {
   try {
-    const filePath = req.query.path as string;
-    if (!filePath) {
-      return res.status(400).json({ error: 'File path is required' });
+    const { path: requestPath } = req.query;
+    
+    if (!requestPath) {
+      return res.status(400).json({ error: 'Path is required' });
     }
-
-    const fullPath = path.resolve(workspaceDir, filePath);
-
-    // Validate path
-    const pathValidation = validator.validatePath(fullPath);
-    if (!pathValidation.valid) {
-      return res.status(403).json({ error: pathValidation.error });
+    
+    const fullPath = path.resolve(workspaceDir, requestPath as string);
+    
+    // Security check
+    if (!fullPath.startsWith(workspaceDir)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-
-    const exists = await fs.pathExists(fullPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'File not found' });
-    }
-
-    const stat = await fs.stat(fullPath);
-    if (!stat.isFile()) {
-      return res.status(400).json({ error: 'Path is not a file' });
-    }
-
-    // Check if file is too large (> 10MB)
-    if (stat.size > 10 * 1024 * 1024) {
-      return res.status(413).json({ error: 'File too large to read' });
-    }
-
-    // Determine encoding based on file type
-    const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
-    const isText = mimeType.startsWith('text/') || 
-                   mimeType.includes('json') || 
-                   mimeType.includes('javascript') ||
-                   mimeType.includes('typescript') ||
-                   ['.md', '.yaml', '.yml', '.toml', '.ini', '.cfg', '.conf'].some(ext => 
-                     fullPath.toLowerCase().endsWith(ext)
-                   );
-
-    const encoding = isText ? 'utf8' : 'base64';
-    const content = await fs.readFile(fullPath, encoding as any);
-
-    const fileContent: FileContent = {
-      path: filePath,
+    
+    const content = await fs.readFile(fullPath, 'utf-8');
+    const mimeType = mime.lookup(fullPath) || 'text/plain';
+    
+    res.json({
       content,
-      encoding,
-      size: stat.size,
-    };
-
-    res.json(fileContent);
+      path: path.relative(workspaceDir, fullPath),
+      mimeType,
+      size: content.length
+    });
   } catch (error) {
     console.error('Error reading file:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
+    res.status(500).json({ error: 'Failed to read file' });
   }
 });
 
-// POST /api/files/write - Write file contents
+// Write file
 router.post('/write', async (req, res) => {
   try {
-    const { path: filePath, content, encoding = 'utf8' } = req.body;
-
-    if (!filePath || content === undefined) {
-      return res.status(400).json({ error: 'File path and content are required' });
+    const { path: requestPath, content } = req.body;
+    
+    if (!requestPath || content === undefined) {
+      return res.status(400).json({ error: 'Path and content are required' });
     }
-
-    const fullPath = path.resolve(workspaceDir, filePath);
-
-    // Validate path
-    const pathValidation = validator.validatePath(fullPath);
-    if (!pathValidation.valid) {
-      return res.status(403).json({ error: pathValidation.error });
+    
+    const fullPath = path.resolve(workspaceDir, requestPath);
+    
+    // Security check
+    if (!fullPath.startsWith(workspaceDir)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-
-    // Validate filename
-    const filename = path.basename(fullPath);
-    const filenameValidation = PathValidator.validateFilename(filename);
-    if (!filenameValidation.valid) {
-      return res.status(403).json({ error: filenameValidation.error });
-    }
-
-    // Ensure parent directory exists
+    
+    // Ensure directory exists
     await fs.ensureDir(path.dirname(fullPath));
-
-    // Write file
-    await fs.writeFile(fullPath, content, encoding as any);
-
-    const stat = await fs.stat(fullPath);
-
+    
+    await fs.writeFile(fullPath, content, 'utf-8');
+    
     res.json({
       message: 'File written successfully',
-      path: filePath,
-      size: stat.size,
+      path: path.relative(workspaceDir, fullPath),
+      size: content.length
     });
   } catch (error) {
     console.error('Error writing file:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
+    res.status(500).json({ error: 'Failed to write file' });
   }
 });
 
-// POST /api/files/create-directory - Create directory
-router.post('/create-directory', async (req, res) => {
+// Create directory
+router.post('/mkdir', async (req, res) => {
   try {
-    const { path: dirPath } = req.body;
-
-    if (!dirPath) {
-      return res.status(400).json({ error: 'Directory path is required' });
+    const { path: requestPath } = req.body;
+    
+    if (!requestPath) {
+      return res.status(400).json({ error: 'Path is required' });
     }
-
-    const fullPath = path.resolve(workspaceDir, dirPath);
-
-    // Validate path
-    const pathValidation = validator.validatePath(fullPath);
-    if (!pathValidation.valid) {
-      return res.status(403).json({ error: pathValidation.error });
+    
+    const fullPath = path.resolve(workspaceDir, requestPath);
+    
+    // Security check
+    if (!fullPath.startsWith(workspaceDir)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-
+    
     await fs.ensureDir(fullPath);
-
+    
     res.json({
       message: 'Directory created successfully',
-      path: dirPath,
+      path: path.relative(workspaceDir, fullPath)
     });
   } catch (error) {
     console.error('Error creating directory:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
+    res.status(500).json({ error: 'Failed to create directory' });
   }
 });
 
-// DELETE /api/files/delete - Delete file or directory
+// Delete file or directory
 router.delete('/delete', async (req, res) => {
   try {
-    const filePath = req.query.path as string;
-
-    if (!filePath) {
-      return res.status(400).json({ error: 'File path is required' });
+    const { path: requestPath } = req.body;
+    
+    if (!requestPath) {
+      return res.status(400).json({ error: 'Path is required' });
     }
-
-    const fullPath = path.resolve(workspaceDir, filePath);
-
-    // Validate path
-    const pathValidation = validator.validatePath(fullPath);
-    if (!pathValidation.valid) {
-      return res.status(403).json({ error: pathValidation.error });
+    
+    const fullPath = path.resolve(workspaceDir, requestPath);
+    
+    // Security check
+    if (!fullPath.startsWith(workspaceDir)) {
+      return res.status(403).json({ error: 'Access denied' });
     }
-
-    const exists = await fs.pathExists(fullPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'File or directory not found' });
-    }
-
+    
     await fs.remove(fullPath);
-
+    
     res.json({
-      message: 'File or directory deleted successfully',
-      path: filePath,
+      message: 'File/directory deleted successfully',
+      path: path.relative(workspaceDir, fullPath)
     });
   } catch (error) {
     console.error('Error deleting file:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
-  }
-});
-
-// POST /api/files/move - Move/rename file or directory
-router.post('/move', async (req, res) => {
-  try {
-    const { from, to } = req.body;
-
-    if (!from || !to) {
-      return res.status(400).json({ error: 'Source and destination paths are required' });
-    }
-
-    const fromPath = path.resolve(workspaceDir, from);
-    const toPath = path.resolve(workspaceDir, to);
-
-    // Validate both paths
-    const fromValidation = validator.validatePath(fromPath);
-    if (!fromValidation.valid) {
-      return res.status(403).json({ error: fromValidation.error });
-    }
-
-    const toValidation = validator.validatePath(toPath);
-    if (!toValidation.valid) {
-      return res.status(403).json({ error: toValidation.error });
-    }
-
-    const exists = await fs.pathExists(fromPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'Source file or directory not found' });
-    }
-
-    // Ensure destination directory exists
-    await fs.ensureDir(path.dirname(toPath));
-
-    await fs.move(fromPath, toPath);
-
-    res.json({
-      message: 'File or directory moved successfully',
-      from,
-      to,
-    });
-  } catch (error) {
-    console.error('Error moving file:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
-  }
-});
-
-// POST /api/files/copy - Copy file or directory
-router.post('/copy', async (req, res) => {
-  try {
-    const { from, to } = req.body;
-
-    if (!from || !to) {
-      return res.status(400).json({ error: 'Source and destination paths are required' });
-    }
-
-    const fromPath = path.resolve(workspaceDir, from);
-    const toPath = path.resolve(workspaceDir, to);
-
-    // Validate both paths
-    const fromValidation = validator.validatePath(fromPath);
-    if (!fromValidation.valid) {
-      return res.status(403).json({ error: fromValidation.error });
-    }
-
-    const toValidation = validator.validatePath(toPath);
-    if (!toValidation.valid) {
-      return res.status(403).json({ error: toValidation.error });
-    }
-
-    const exists = await fs.pathExists(fromPath);
-    if (!exists) {
-      return res.status(404).json({ error: 'Source file or directory not found' });
-    }
-
-    // Ensure destination directory exists
-    await fs.ensureDir(path.dirname(toPath));
-
-    await fs.copy(fromPath, toPath);
-
-    res.json({
-      message: 'File or directory copied successfully',
-      from,
-      to,
-    });
-  } catch (error) {
-    console.error('Error copying file:', error);
-    res.status(500).json({ 
-      error: error instanceof Error ? error.message : 'Unknown error' 
-    });
+    res.status(500).json({ error: 'Failed to delete file' });
   }
 });
 
