@@ -231,7 +231,7 @@ model FileEmbedding {
 model TerminalSession {
   id          String   @id @default(cuid())
   sessionId   String   @unique
-  workingDir  String   @db.Text
+  workingDir  String   @db.VarChar(500)
   environment Json?
   active      Boolean  @default(true)
   lastCommand String?  @db.Text
