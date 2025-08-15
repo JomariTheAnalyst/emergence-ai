@@ -3,12 +3,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id        String   @id @default(uuid())
+  id        String   @id @default(cuid())
   email     String   @unique
   name      String?
   avatar    String?
@@ -26,15 +26,15 @@ model User {
 }
 
 model Repository {
-  id            String   @id @default(uuid())
+  id            String   @id @default(cuid())
   name          String
   fullName      String   @unique
-  description   String?
-  url           String
+  description   String?  @db.Text
+  url           String   @db.Text
   private       Boolean  @default(false)
   defaultBranch String   @default("main")
   owner         String
-  cloneUrl      String?
+  cloneUrl      String?  @db.Text
   lastSync      DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -51,7 +51,7 @@ model Repository {
 }
 
 model GitBranch {
-  id           String   @id @default(uuid())
+  id           String   @id @default(cuid())
   name         String
   sha          String
   isDefault    Boolean  @default(false)
@@ -68,10 +68,10 @@ model GitBranch {
 }
 
 model PullRequest {
-  id          String   @id @default(uuid())
+  id          String   @id @default(cuid())
   number      Int
-  title       String
-  description String?
+  title       String   @db.Text
+  description String?  @db.Text
   state       PullRequestState @default(OPEN)
   baseBranch  String
   headBranch  String
@@ -89,9 +89,9 @@ model PullRequest {
 }
 
 model Task {
-  id            String      @id @default(uuid())
-  title         String
-  description   String?
+  id            String      @id @default(cuid())
+  title         String      @db.Text
+  description   String?     @db.Text
   status        TaskStatus  @default(PENDING)
   priority      TaskPriority @default(MEDIUM)
   assignedAgent String?
@@ -117,9 +117,9 @@ model Task {
 }
 
 model TaskLog {
-  id        String   @id @default(uuid())
+  id        String   @id @default(cuid())
   level     LogLevel
-  message   String
+  message   String   @db.Text
   metadata  Json?
   timestamp DateTime @default(now())
 
@@ -131,8 +131,8 @@ model TaskLog {
 }
 
 model ChatMessage {
-  id        String   @id @default(uuid())
-  content   String
+  id        String   @id @default(cuid())
+  content   String   @db.Text
   role      String   // 'user' | 'assistant' | 'system' | 'tool'
   timestamp DateTime @default(now())
   metadata  Json?
@@ -153,7 +153,7 @@ model ChatMessage {
 }
 
 model AgentSession {
-  id          String   @id @default(uuid())
+  id          String   @id @default(cuid())
   name        String?
   provider    String   // 'gemini' | 'openrouter'
   model       String   // specific model name
@@ -174,15 +174,15 @@ model AgentSession {
 }
 
 model Memory {
-  id        String     @id @default(uuid())
+  id        String     @id @default(cuid())
   type      MemoryType
   title     String
-  content   String
-  tags      String[]
-  importance Int        @default(5) // 1-10 scale
+  content   String     @db.Text
+  tags      Json       // Array of strings stored as JSON
+  importance Int       @default(5) // 1-10 scale
   accessed  Int        @default(0) // access count
   lastAccess DateTime?
-  embedding Float[]?   // for semantic search
+  embedding Json?      // Float array stored as JSON for semantic search
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
@@ -196,11 +196,11 @@ model Memory {
 }
 
 model ToolCall {
-  id         String   @id @default(uuid())
+  id         String   @id @default(cuid())
   name       String
   parameters Json
   result     Json?
-  error      String?
+  error      String?  @db.Text
   duration   Int?     // execution time in milliseconds
   timestamp  DateTime @default(now())
 
@@ -212,10 +212,10 @@ model ToolCall {
 }
 
 model FileEmbedding {
-  id         String   @id @default(uuid())
-  filePath   String
+  id         String   @id @default(cuid())
+  filePath   String   @db.Text
   content    String   @db.Text
-  embedding  Float[]
+  embedding  Json     // Float array stored as JSON
   repository String
   language   String?
   size       Int      @default(0)
@@ -229,13 +229,13 @@ model FileEmbedding {
 }
 
 model TerminalSession {
-  id          String   @id @default(uuid())
+  id          String   @id @default(cuid())
   sessionId   String   @unique
-  workingDir  String
+  workingDir  String   @db.Text
   environment Json?
   active      Boolean  @default(true)
-  lastCommand String?
-  commandHistory String[]
+  lastCommand String?  @db.Text
+  commandHistory Json?  // Array of strings stored as JSON
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -243,7 +243,7 @@ model TerminalSession {
 }
 
 model PromptTemplate {
-  id          String   @id @default(uuid())
+  id          String   @id @default(cuid())
   name        String   @unique
   category    String
   version     String   @default("1.0")
@@ -260,7 +260,7 @@ model PromptTemplate {
 }
 
 model APIUsage {
-  id        String   @id @default(uuid())
+  id        String   @id @default(cuid())
   provider  String   // 'gemini' | 'openrouter'
   model     String
   operation String   // 'chat' | 'embedding' | 'tool_call'
