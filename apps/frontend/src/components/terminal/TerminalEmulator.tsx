@@ -1,294 +1,451 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { WebLinksAddon } from 'xterm-addon-web-links';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
 import { motion } from 'framer-motion';
 import { 
-  PlayIcon, 
-  StopIcon, 
-  ArrowPathIcon,
-  TrashIcon 
-} from '@heroicons/react/24/outline';
-import { useWebSocket } from '@/providers/WebSocketProvider';
+  Play, 
+  Square, 
+  RefreshCw, 
+  Settings, 
+  Plus, 
+  X,
+  Terminal as TerminalIcon,
+  Maximize2,
+  Minimize2
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { cn } from '@/lib/utils';
+import { useWebSocket } from '@/hooks/useWebSocket';
+import { useTerminal } from '@/hooks/useTerminal';
+
+// Import xterm CSS
+import '@xterm/xterm/css/xterm.css';
+
+interface TerminalSession {
+  id: string;
+  name: string;
+  workingDir: string;
+  active: boolean;
+  lastActivity: Date;
+}
+
+interface TerminalTab {
+  id: string;
+  name: string;
+  terminal: Terminal;
+  fitAddon: FitAddon;
+  active: boolean;
+}
 
 export function TerminalEmulator() {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const terminal = useRef<Terminal | null>(null);
-  const fitAddon = useRef<FitAddon | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentCommand, setCurrentCommand] = useState('');
-  const [workingDir, setWorkingDir] = useState('/tmp/shadow-workspace');
-  const { isConnected, sendMessage } = useWebSocket();
+  const [tabs, setTabs] = useState<TerminalTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<TerminalSession[]>([]);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  
+  const terminalContainerRef = useRef<HTMLDivElement>(null);
+  const { isConnected, sendMessage, subscribe } = useWebSocket();
+  const { 
+    createSession, 
+    executeCommand, 
+    getSessionHistory, 
+    killSession 
+  } = useTerminal();
 
+  // Initialize default terminal tab
   useEffect(() => {
-    if (!terminalRef.current) return;
+    if (tabs.length === 0) {
+      createNewTab();
+    }
+  }, []);
 
-    // Initialize terminal
-    terminal.current = new Terminal({
-      theme: {
-        background: 'transparent',
-        foreground: '#f8fafc',
-        cursor: '#64748b',
-        cursorAccent: '#0f172a',
-        selection: '#334155',
-        black: '#0f172a',
-        red: '#ef4444',
-        green: '#10b981',
-        yellow: '#f59e0b',
-        blue: '#3b82f6',
-        magenta: '#8b5cf6',
-        cyan: '#06b6d4',
-        white: '#f8fafc',
-        brightBlack: '#475569',
-        brightRed: '#f87171',
-        brightGreen: '#34d399',
-        brightYellow: '#fbbf24',
-        brightBlue: '#60a5fa',
-        brightMagenta: '#a78bfa',
-        brightCyan: '#22d3ee',
-        brightWhite: '#ffffff',
-      },
-      fontFamily: 'var(--font-mono), Monaco, Consolas, monospace',
-      fontSize: 14,
-      lineHeight: 1.2,
-      cursorBlink: true,
-      cursorStyle: 'block',
-      scrollback: 1000,
-      tabStopWidth: 4,
-    });
-
-    // Initialize addons
-    fitAddon.current = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-
-    terminal.current.loadAddon(fitAddon.current);
-    terminal.current.loadAddon(webLinksAddon);
-
-    // Open terminal
-    terminal.current.open(terminalRef.current);
-    fitAddon.current.fit();
-
-    // Welcome message
-    terminal.current.writeln('\x1b[1;32m╭─ Shadow Terminal Emulator\x1b[0m');
-    terminal.current.writeln('\x1b[1;32m│\x1b[0m  Connected to workspace: \x1b[1;34m/tmp/shadow-workspace\x1b[0m');
-    terminal.current.writeln('\x1b[1;32m│\x1b[0m  Type commands below or use the input field');
-    terminal.current.writeln('\x1b[1;32m╰─\x1b[0m');
-    terminal.current.writeln('');
-    terminal.current.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
-
-    // Handle input
-    let currentInput = '';
-    terminal.current.onData((data) => {
-      const char = data;
-      
-      // Handle special keys
-      if (char === '\r') { // Enter
-        terminal.current?.writeln('');
-        if (currentInput.trim()) {
-          executeCommand(currentInput.trim());
-        }
-        currentInput = '';
-        return;
-      }
-      
-      if (char === '\u007f') { // Backspace
-        if (currentInput.length > 0) {
-          currentInput = currentInput.slice(0, -1);
-          terminal.current?.write('\b \b');
-        }
-        return;
-      }
-      
-      if (char === '\u0003') { // Ctrl+C
-        terminal.current?.writeln('^C');
-        terminal.current?.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
-        currentInput = '';
-        return;
-      }
-      
-      // Regular characters
-      if (char.charCodeAt(0) >= 32) {
-        currentInput += char;
-        terminal.current?.write(char);
+  // Handle terminal output from WebSocket
+  useEffect(() => {
+    const unsubscribe = subscribe('terminal_output', (data: {
+      sessionId: string;
+      output: string;
+      type: 'stdout' | 'stderr';
+    }) => {
+      const tab = tabs.find(t => t.id === data.sessionId);
+      if (tab) {
+        const color = data.type === 'stderr' ? '\x1b[31m' : '\x1b[37m';
+        tab.terminal.write(`${color}${data.output}\x1b[0m`);
       }
     });
 
-    // Handle window resize
+    return unsubscribe;
+  }, [subscribe, tabs]);
+
+  // Handle window resize
+  useEffect(() => {
     const handleResize = () => {
-      if (fitAddon.current) {
-        fitAddon.current.fit();
-      }
+      tabs.forEach(tab => {
+        if (tab.active && tab.fitAddon) {
+          setTimeout(() => tab.fitAddon.fit(), 100);
+        }
+      });
     };
 
     window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [tabs]);
+
+  const createNewTab = useCallback(async () => {
+    try {
+      const sessionId = await createSession('/tmp/shadow-workspace');
+      const terminal = new Terminal({
+        theme: {
+          background: '#0f172a',
+          foreground: '#e2e8f0',
+          cursor: '#3b82f6',
+          selection: '#374151',
+          black: '#1e293b',
+          red: '#ef4444',
+          green: '#10b981',
+          yellow: '#f59e0b',
+          blue: '#3b82f6',
+          magenta: '#8b5cf6',
+          cyan: '#06b6d4',
+          white: '#f1f5f9',
+        },
+        fontSize: 14,
+        fontFamily: 'JetBrains Mono, monospace',
+        cursorBlink: true,
+        rows: 24,
+        cols: 80,
+      });
+
+      const fitAddon = new FitAddon();
+      const webLinksAddon = new WebLinksAddon();
+      
+      terminal.loadAddon(fitAddon);
+      terminal.loadAddon(webLinksAddon);
+
+      // Handle user input
+      let currentLine = '';
+      terminal.onData((data) => {
+        switch (data) {
+          case '\r': // Enter key
+            terminal.write('\r\n');
+            if (currentLine.trim()) {
+              executeCommand(sessionId, currentLine.trim());
+            }
+            currentLine = '';
+            break;
+            
+          case '\u007f': // Backspace
+            if (currentLine.length > 0) {
+              currentLine = currentLine.slice(0, -1);
+              terminal.write('\b \b');
+            }
+            break;
+            
+          case '\u0003': // Ctrl+C
+            terminal.write('^C\r\n$ ');
+            currentLine = '';
+            break;
+            
+          default:
+            if (data >= ' ' || data === '\t') {
+              currentLine += data;
+              terminal.write(data);
+            }
+        }
+      });
+
+      const newTab: TerminalTab = {
+        id: sessionId,
+        name: `Terminal ${tabs.length + 1}`,
+        terminal,
+        fitAddon,
+        active: false,
+      };
+
+      setTabs(prev => [...prev, newTab]);
+      setActiveTabId(sessionId);
+
+      // Welcome message
+      terminal.write('\x1b[32mWelcome to Shadow Terminal\x1b[0m\r\n');
+      terminal.write('Type your commands below.\r\n\r\n$ ');
+
+    } catch (error) {
+      console.error('Failed to create terminal session:', error);
+    }
+  }, [tabs, createSession, executeCommand]);
+
+  const closeTab = useCallback(async (tabId: string) => {
+    const tabIndex = tabs.findIndex(t => t.id === tabId);
+    if (tabIndex === -1) return;
+
+    const tab = tabs[tabIndex];
+    tab.terminal.dispose();
+    
+    try {
+      await killSession(tabId);
+    } catch (error) {
+      console.error('Failed to kill terminal session:', error);
+    }
+
+    const newTabs = tabs.filter(t => t.id !== tabId);
+    setTabs(newTabs);
+
+    // Switch to another tab if the closed tab was active
+    if (activeTabId === tabId) {
+      if (newTabs.length > 0) {
+        setActiveTabId(newTabs[0].id);
+      } else {
+        setActiveTabId(null);
+      }
+    }
+  }, [tabs, activeTabId, killSession]);
+
+  const switchTab = useCallback((tabId: string) => {
+    setActiveTabId(tabId);
+    
+    // Hide all terminals
+    tabs.forEach(tab => {
+      const element = document.getElementById(`terminal-${tab.id}`);
+      if (element) {
+        element.style.display = 'none';
+      }
+    });
+
+    // Show active terminal
+    setTimeout(() => {
+      const activeElement = document.getElementById(`terminal-${tabId}`);
+      if (activeElement) {
+        activeElement.style.display = 'block';
+        const tab = tabs.find(t => t.id === tabId);
+        if (tab) {
+          tab.fitAddon.fit();
+          tab.terminal.focus();
+        }
+      }
+    }, 100);
+  }, [tabs]);
+
+  // Render terminal in container when active tab changes
+  useEffect(() => {
+    if (!activeTabId || !terminalContainerRef.current) return;
+
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (!activeTab) return;
+
+    const container = terminalContainerRef.current;
+    
+    // Clear container
+    container.innerHTML = '';
+    
+    // Create terminal element
+    const terminalElement = document.createElement('div');
+    terminalElement.id = `terminal-${activeTab.id}`;
+    terminalElement.style.width = '100%';
+    terminalElement.style.height = '100%';
+    container.appendChild(terminalElement);
+
+    // Open terminal
+    activeTab.terminal.open(terminalElement);
+    
+    // Fit to container
+    setTimeout(() => {
+      activeTab.fitAddon.fit();
+      activeTab.terminal.focus();
+    }, 100);
 
     return () => {
-      window.removeEventListener('resize', handleResize);
-      terminal.current?.dispose();
+      activeTab.terminal.blur();
     };
-  }, []);
+  }, [activeTabId, tabs, isMaximized]);
 
-  const executeCommand = async (command: string) => {
-    setIsRunning(true);
-    setCurrentCommand(command);
-    
-    // Mock command execution for demo
+  const clearTerminal = useCallback(() => {
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab) {
+      activeTab.terminal.clear();
+      activeTab.terminal.write('$ ');
+    }
+  }, [tabs, activeTabId]);
+
+  const restartSession = useCallback(async () => {
+    if (!activeTabId) return;
+
     try {
-      // Show command being executed
-      terminal.current?.writeln(`\x1b[1;33mExecuting:\x1b[0m ${command}`);
+      await killSession(activeTabId);
+      const newSessionId = await createSession('/tmp/shadow-workspace');
       
-      // Simulate some output based on command
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      if (command.startsWith('ls')) {
-        terminal.current?.writeln('README.md');
-        terminal.current?.writeln('package.json');
-        terminal.current?.writeln('src/');
-        terminal.current?.writeln('node_modules/');
-      } else if (command.startsWith('pwd')) {
-        terminal.current?.writeln(workingDir);
-      } else if (command.startsWith('echo')) {
-        const message = command.substring(5);
-        terminal.current?.writeln(message);
-      } else if (command === 'clear') {
-        terminal.current?.clear();
-      } else if (command === 'help') {
-        terminal.current?.writeln('Available commands:');
-        terminal.current?.writeln('  ls       - List directory contents');
-        terminal.current?.writeln('  pwd      - Print working directory');
-        terminal.current?.writeln('  echo     - Display message');
-        terminal.current?.writeln('  clear    - Clear terminal');
-        terminal.current?.writeln('  help     - Show this help');
-      } else {
-        terminal.current?.writeln(`\x1b[1;31mCommand not found:\x1b[0m ${command}`);
-        terminal.current?.writeln('Type "help" for available commands');
+      const tab = tabs.find(t => t.id === activeTabId);
+      if (tab) {
+        tab.terminal.clear();
+        tab.terminal.write('\x1b[32mSession restarted\x1b[0m\r\n$ ');
       }
-      
-      // Send command via WebSocket if connected
-      if (isConnected) {
-        sendMessage({
-          type: 'terminal_command',
-          payload: {
-            command,
-            workingDir,
-            sessionId: 'demo-session'
-          }
-        });
-      }
-      
     } catch (error) {
-      terminal.current?.writeln(`\x1b[1;31mError:\x1b[0m ${error}`);
-    } finally {
-      setIsRunning(false);
-      setCurrentCommand('');
-      terminal.current?.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
+      console.error('Failed to restart session:', error);
     }
-  };
-
-  const handleClear = () => {
-    terminal.current?.clear();
-    terminal.current?.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
-  };
-
-  const handleStop = () => {
-    if (isRunning) {
-      terminal.current?.writeln('');
-      terminal.current?.writeln('\x1b[1;31m^C Process interrupted\x1b[0m');
-      terminal.current?.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
-      setIsRunning(false);
-      setCurrentCommand('');
-    }
-  };
-
-  const handleRestart = () => {
-    handleClear();
-    terminal.current?.writeln('\x1b[1;32m╭─ Shadow Terminal Emulator\x1b[0m');
-    terminal.current?.writeln('\x1b[1;32m│\x1b[0m  Terminal restarted');
-    terminal.current?.writeln('\x1b[1;32m╰─\x1b[0m');
-    terminal.current?.writeln('');
-    terminal.current?.write('\x1b[1;36mshadow@workspace\x1b[0m:\x1b[1;34m~\x1b[0m$ ');
-  };
+  }, [activeTabId, tabs, killSession, createSession]);
 
   return (
-    <div className="flex flex-col h-full bg-shadow-950">
-      {/* Terminal Header */}
-      <div className="flex items-center justify-between p-4 border-b border-shadow-800">
-        <div className="flex items-center space-x-3">
-          <div className="flex space-x-1">
-            <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-            <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
-            <div className="w-3 h-3 bg-green-500 rounded-full"></div>
+    <div className={cn(
+      "flex flex-col h-full bg-background",
+      isMaximized && "fixed inset-0 z-50 bg-background"
+    )}>
+      {/* Header */}
+      <div className="flex-shrink-0 border-b border-border bg-card/50 backdrop-blur-sm">
+        <div className="flex items-center justify-between p-2">
+          {/* Tab Bar */}
+          <div className="flex items-center space-x-1 flex-1">
+            {tabs.map((tab) => (
+              <motion.div
+                key={tab.id}
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+              >
+                <Button
+                  variant={activeTabId === tab.id ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => switchTab(tab.id)}
+                  className="h-8 px-3 text-xs group relative"
+                >
+                  <TerminalIcon className="h-3 w-3 mr-1" />
+                  {tab.name}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(tab.id);
+                    }}
+                    className="ml-2 opacity-0 group-hover:opacity-100 hover:bg-destructive hover:text-destructive-foreground rounded p-0.5"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </Button>
+              </motion.div>
+            ))}
+            
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={createNewTab}
+              className="h-8 w-8 p-0"
+              title="New Terminal"
+            >
+              <Plus className="h-3 w-3" />
+            </Button>
           </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">Terminal</h2>
-            <p className="text-sm text-shadow-400">{workingDir}</p>
+
+          {/* Actions */}
+          <div className="flex items-center space-x-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={clearTerminal}
+              className="h-8 w-8 p-0"
+              title="Clear Terminal"
+              disabled={!activeTabId}
+            >
+              <RefreshCw className="h-3 w-3" />
+            </Button>
+            
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={restartSession}
+              className="h-8 w-8 p-0"
+              title="Restart Session"
+              disabled={!activeTabId}
+            >
+              <Square className="h-3 w-3" />
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsMaximized(!isMaximized)}
+              className="h-8 w-8 p-0"
+              title={isMaximized ? 'Restore' : 'Maximize'}
+            >
+              {isMaximized ? (
+                <Minimize2 className="h-3 w-3" />
+              ) : (
+                <Maximize2 className="h-3 w-3" />
+              )}
+            </Button>
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowSettings(!showSettings)}
+              className="h-8 w-8 p-0"
+              title="Settings"
+            >
+              <Settings className="h-3 w-3" />
+            </Button>
           </div>
         </div>
-        
-        <div className="flex items-center space-x-2">
-          {isRunning && (
-            <div className="flex items-center space-x-2 text-sm text-yellow-400">
-              <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse"></div>
-              <span>Running: {currentCommand}</span>
+
+        {/* Connection Status */}
+        <div className="px-4 py-1 text-xs text-muted-foreground border-t border-border/50">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <div className={cn(
+                "w-2 h-2 rounded-full",
+                isConnected ? "bg-green-500" : "bg-red-500"
+              )}></div>
+              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+              {activeTabId && (
+                <>
+                  <span>•</span>
+                  <span>Session: {activeTabId.substring(0, 8)}...</span>
+                </>
+              )}
             </div>
-          )}
-          
-          <div className="flex space-x-1">
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleStop}
-              disabled={!isRunning}
-              className="p-2 bg-red-600 hover:bg-red-700 disabled:bg-shadow-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors duration-200"
-              title="Stop current process"
-            >
-              <StopIcon className="h-4 w-4" />
-            </motion.button>
             
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleRestart}
-              className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors duration-200"
-              title="Restart terminal"
-            >
-              <ArrowPathIcon className="h-4 w-4" />
-            </motion.button>
-            
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={handleClear}
-              className="p-2 bg-shadow-700 hover:bg-shadow-600 text-white rounded-lg transition-colors duration-200"
-              title="Clear terminal"
-            >
-              <TrashIcon className="h-4 w-4" />
-            </motion.button>
+            {tabs.length > 0 && (
+              <span>{tabs.length} terminal{tabs.length !== 1 ? 's' : ''} active</span>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Terminal Content */}
-      <div className="flex-1 p-4 bg-shadow-950">
-        <div
-          ref={terminalRef}
-          className="w-full h-full rounded-lg bg-shadow-900/50 border border-shadow-800 p-4"
-          style={{ minHeight: '400px' }}
-        />
+      {/* Terminal Container */}
+      <div className="flex-1 bg-slate-900 overflow-hidden">
+        {tabs.length === 0 ? (
+          <div className="flex items-center justify-center h-full">
+            <div className="text-center">
+              <TerminalIcon className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-medium text-foreground mb-2">No Terminal Sessions</h3>
+              <p className="text-muted-foreground mb-4">
+                Create a new terminal session to get started
+              </p>
+              <Button onClick={createNewTab}>
+                <Plus className="h-4 w-4 mr-2" />
+                New Terminal
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div 
+            ref={terminalContainerRef}
+            className="w-full h-full"
+            style={{ fontFamily: 'JetBrains Mono, monospace' }}
+          />
+        )}
       </div>
 
       {/* Status Bar */}
-      <div className="px-4 py-2 bg-shadow-900 border-t border-shadow-800 text-xs text-shadow-400">
-        <div className="flex items-center justify-between">
-          <span>Press Ctrl+C to interrupt, type "help" for commands</span>
+      <div className="flex-shrink-0 border-t border-border bg-card/30 px-4 py-1">
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
           <div className="flex items-center space-x-4">
-            <span>Session: demo-session</span>
-            <span className={`flex items-center space-x-1 ${isConnected ? 'text-green-400' : 'text-red-400'}`}>
-              <div className={`w-1.5 h-1.5 rounded-full ${isConnected ? 'bg-green-400' : 'bg-red-400'}`}></div>
-              <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
-            </span>
+            <span>Working Directory: /tmp/shadow-workspace</span>
+            <span>Shell: bash</span>
+          </div>
+          
+          <div className="flex items-center space-x-2">
+            <span>Press Ctrl+C to interrupt</span>
+            <span>•</span>
+            <span>Press Ctrl+D to exit</span>
           </div>
         </div>
       </div>
