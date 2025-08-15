@@ -281,6 +281,7 @@ enum TaskStatus {
   COMPLETED
   FAILED
   CANCELLED
+  ON_HOLD
 }
 
 enum TaskPriority {
@@ -304,4 +305,13 @@ enum MemoryType {
   BUG_REPORT
   FEATURE_REQUEST
   GENERAL
+  CONVERSATION_SUMMARY
+  TOOL_USAGE_PATTERN
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+  DRAFT
 }
