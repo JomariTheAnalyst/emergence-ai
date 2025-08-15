@@ -213,10 +213,10 @@ model ToolCall {
 
 model FileEmbedding {
   id         String   @id @default(cuid())
-  filePath   String   @db.Text
+  filePath   String   @db.VarChar(500)
   content    String   @db.Text
   embedding  Json     // Float array stored as JSON
-  repository String
+  repository String   @db.VarChar(255)
   language   String?
   size       Int      @default(0)
   checksum   String?  // for change detection
