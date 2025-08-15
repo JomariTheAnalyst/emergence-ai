@@ -1,0 +1,27 @@
+{
+  "name": "@shadow/agents",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint .",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.15.0",
+    "@shadow/types": "*",
+    "@shadow/db": "*",
+    "openai": "^4.52.0",
+    "axios": "^1.6.0",
+    "zod": "^3.22.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@shadow/typescript-config": "*",
+    "@types/uuid": "^9.0.2",
+    "typescript": "^5.0.0"
+  }
+}
