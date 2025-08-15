@@ -2,47 +2,24 @@ import { BaseLLMProvider, LLMConfig, LLMMessage, LLMResponse, StreamChunk, ToolC
 import { countTokens } from './tokenizer';
 
 /**
- * OpenRouter provider for accessing multiple LLM providers through a single API
+ * OpenAI provider for LLM services
  */
-export class OpenRouterProvider extends BaseLLMProvider {
+export class OpenAIProvider extends BaseLLMProvider {
   constructor(apiKey: string, baseURL?: string) {
-    super(apiKey, baseURL || 'https://openrouter.ai/api/v1');
+    super(apiKey, baseURL || 'https://api.openai.com/v1');
   }
 
   getName(): string {
-    return 'openrouter';
+    return 'openai';
   }
 
   getAvailableModels(): string[] {
     return [
-      // OpenAI models
-      'openai/gpt-4o',
-      'openai/gpt-4o-mini',
-      'openai/gpt-4-turbo',
-      'openai/gpt-3.5-turbo',
-      
-      // Anthropic models
-      'anthropic/claude-3-5-sonnet',
-      'anthropic/claude-3-opus',
-      'anthropic/claude-3-sonnet',
-      'anthropic/claude-3-haiku',
-      
-      // Meta models
-      'meta-llama/llama-3-70b-instruct',
-      'meta-llama/llama-3-8b-instruct',
-      
-      // Mistral models
-      'mistral/mistral-large',
-      'mistral/mistral-medium',
-      'mistral/mistral-small',
-      
-      // Google models
-      'google/gemini-1.5-pro',
-      'google/gemini-1.5-flash',
-      
-      // Other models
-      'cohere/command-r',
-      'perplexity/sonar-medium-online',
+      'gpt-4o',
+      'gpt-4o-mini',
+      'gpt-4-turbo',
+      'gpt-4',
+      'gpt-3.5-turbo',
     ];
   }
 
@@ -78,15 +55,13 @@ export class OpenRouterProvider extends BaseLLMProvider {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`,
-          'HTTP-Referer': 'https://emergence-ai.app',
-          'X-Title': 'Emergence AI',
         },
         body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
-        throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} ${errorData ? JSON.stringify(errorData) : ''}`);
+        throw new Error(`OpenAI API error: ${response.status} ${response.statusText} ${errorData ? JSON.stringify(errorData) : ''}`);
       }
 
       const data = await response.json();
@@ -102,9 +77,9 @@ export class OpenRouterProvider extends BaseLLMProvider {
       })) as ToolCall[] | undefined;
 
       // Calculate token usage
-      const promptTokens = data.usage?.prompt_tokens || 0;
-      const completionTokens = data.usage?.completion_tokens || 0;
-      const totalTokens = data.usage?.total_tokens || 0;
+      const promptTokens = data.usage.prompt_tokens;
+      const completionTokens = data.usage.completion_tokens;
+      const totalTokens = data.usage.total_tokens;
 
       return {
         content: data.choices[0]?.message?.content || '',
@@ -113,12 +88,12 @@ export class OpenRouterProvider extends BaseLLMProvider {
           completionTokens,
           totalTokens,
         },
-        model: data.model || config.model,
+        model: config.model,
         finishReason: data.choices[0]?.finish_reason,
         toolCalls,
       };
     } catch (error) {
-      console.error('OpenRouter API error:', error);
+      console.error('OpenAI API error:', error);
       throw error;
     }
   }
@@ -156,15 +131,13 @@ export class OpenRouterProvider extends BaseLLMProvider {
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.apiKey}`,
-          'HTTP-Referer': 'https://emergence-ai.app',
-          'X-Title': 'Emergence AI',
         },
         body: JSON.stringify(requestBody),
       });
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => null);
-        throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} ${errorData ? JSON.stringify(errorData) : ''}`);
+        throw new Error(`OpenAI API error: ${response.status} ${response.statusText} ${errorData ? JSON.stringify(errorData) : ''}`);
       }
 
       if (!response.body) {
@@ -277,46 +250,8 @@ export class OpenRouterProvider extends BaseLLMProvider {
         reader.releaseLock();
       }
     } catch (error) {
-      console.error('OpenRouter streaming error:', error);
+      console.error('OpenAI streaming error:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Get available models from OpenRouter API
-   * This method fetches the actual available models from the API
-   * 
-   * @returns Promise with array of model information
-   */
-  async fetchAvailableModels(): Promise<Array<{
-    id: string;
-    name: string;
-    provider: string;
-    context_length: number;
-    pricing: {
-      prompt: number;
-      completion: number;
-    };
-  }>> {
-    try {
-      const response = await fetch(`${this.baseURL}/models`, {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${this.apiKey}`,
-          'HTTP-Referer': 'https://emergence-ai.app',
-          'X-Title': 'Emergence AI',
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      return data.data || [];
-    } catch (error) {
-      console.error('Error fetching OpenRouter models:', error);
-      return [];
     }
   }
 }

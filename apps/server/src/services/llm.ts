@@ -1,177 +1,346 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import path from 'path';
-import fs from 'fs';
+import { createAgentOrchestrator } from '@shadow/agents';
+import { OpenAIProvider } from '@shadow/agents/providers/openai';
+import { AnthropicProvider } from '@shadow/agents/providers/anthropic';
+import { GeminiProvider } from '@shadow/agents/providers/gemini';
+import { OpenRouterProvider } from '@shadow/agents/providers/openrouter';
+import { prisma } from '@shadow/db';
 
-const execAsync = promisify(exec);
-
-interface LLMConfig {
-  provider: 'openai' | 'anthropic' | 'gemini';
-  model: string;
-  apiKey: string;
-  systemMessage?: string;
-}
-
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  timestamp: Date;
-}
-
-export class LLMService {
-  private defaultConfig: LLMConfig;
-  private pythonScriptPath: string;
+class LLMService {
+  private apiKeys: Record<string, string> = {};
+  private defaultProvider = 'gemini';
+  private defaultModel = 'gemini-1.5-pro';
 
   constructor() {
-    // Default configuration using Emergent LLM key
-    this.defaultConfig = {
-      provider: 'openai',
-      model: 'gpt-4o-mini',
-      apiKey: process.env.EMERGENT_LLM_KEY || '',
-      systemMessage: 'You are Shadow, an AI coding agent. You understand codebases, analyze code, generate solutions, debug issues, and help with development tasks. Be concise, accurate, and helpful.'
+    // Load API keys from environment variables
+    this.apiKeys = {
+      openai: process.env.OPENAI_API_KEY || '',
+      anthropic: process.env.ANTHROPIC_API_KEY || '',
+      gemini: process.env.GEMINI_API_KEY || '',
+      openrouter: process.env.OPENROUTER_API_KEY || '',
     };
 
-    this.pythonScriptPath = path.join(__dirname, '../scripts/llm_client.py');
-    this.ensurePythonScript();
+    console.log('LLM Service initialized');
   }
 
-  private ensurePythonScript() {
-    const scriptContent = `#!/usr/bin/env python3
-import sys
-import json
-import os
-import asyncio
-from datetime import datetime
-from emergentintegrations.llm.chat import LlmChat, UserMessage
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
-
-async def main():
-    try:
-        # Get input from command line arguments
-        if len(sys.argv) < 2:
-            print(json.dumps({"error": "No input provided"}))
-            sys.exit(1)
-        
-        input_data = json.loads(sys.argv[1])
-        
-        session_id = input_data.get('sessionId', 'default')
-        message = input_data.get('message', '')
-        provider = input_data.get('provider', 'openai')
-        model = input_data.get('model', 'gpt-4o-mini')
-        api_key = input_data.get('apiKey', os.getenv('EMERGENT_LLM_KEY', ''))
-        system_message = input_data.get('systemMessage', 'You are Shadow, an AI coding agent.')
-        
-        if not message:
-            print(json.dumps({"error": "No message provided"}))
-            sys.exit(1)
-        
-        if not api_key:
-            print(json.dumps({"error": "No API key provided"}))
-            sys.exit(1)
-        
-        # Initialize chat
-        chat = LlmChat(api_key, session_id, system_message)
-        chat.with_model(provider, model)
-        
-        # Send message
-        user_message = UserMessage(message)
-        response = await chat.send_message(user_message)
-        
-        # Return response
-        print(json.dumps({
-            "success": True,
-            "response": response,
-            "timestamp": datetime.now().isoformat()
-        }))
-        
-    except Exception as e:
-        print(json.dumps({
-            "error": str(e),
-            "type": type(e).__name__
-        }))
-        sys.exit(1)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-`;
-
-    const scriptDir = path.dirname(this.pythonScriptPath);
-    if (!fs.existsSync(scriptDir)) {
-      fs.mkdirSync(scriptDir, { recursive: true });
-    }
-
-    if (!fs.existsSync(this.pythonScriptPath)) {
-      fs.writeFileSync(this.pythonScriptPath, scriptContent);
-      fs.chmodSync(this.pythonScriptPath, '755');
+  /**
+   * Create a provider instance based on provider name
+   */
+  createProvider(provider: string, apiKey?: string) {
+    switch (provider) {
+      case 'openai':
+        return new OpenAIProvider(apiKey || this.apiKeys.openai);
+      case 'anthropic':
+        return new AnthropicProvider(apiKey || this.apiKeys.anthropic);
+      case 'gemini':
+        return new GeminiProvider(apiKey || this.apiKeys.gemini);
+      case 'openrouter':
+        return new OpenRouterProvider(apiKey || this.apiKeys.openrouter);
+      default:
+        throw new Error(`Unsupported provider: ${provider}`);
     }
   }
 
   /**
-   * Send a chat message and get response
+   * Get provider from model name
+   */
+  getProviderFromModel(model: string): string {
+    if (model.startsWith('gemini-')) {
+      return 'gemini';
+    } else if (model.startsWith('gpt-') || model.includes('openai/')) {
+      return 'openai';
+    } else if (model.includes('claude') || model.includes('anthropic/')) {
+      return 'anthropic';
+    } else {
+      // Default to OpenRouter for other models
+      return 'openrouter';
+    }
+  }
+
+  /**
+   * Normalize model name for provider
+   */
+  normalizeModelName(model: string, provider: string): string {
+    // For OpenRouter, models are prefixed with provider name
+    if (provider === 'openrouter' && !model.includes('/')) {
+      if (model.startsWith('gpt-')) {
+        return `openai/${model}`;
+      } else if (model.includes('claude')) {
+        return `anthropic/${model}`;
+      } else if (model.startsWith('gemini-')) {
+        return `google/${model}`;
+      }
+    }
+    
+    // For other providers, remove provider prefix if present
+    if (provider !== 'openrouter' && model.includes('/')) {
+      return model.split('/')[1];
+    }
+    
+    return model;
+  }
+
+  /**
+   * Send a chat message to the LLM
    */
   async sendChatMessage(
-    sessionId: string, 
-    message: string, 
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
+    sessionId: string,
+    message: string,
+    options: {
+      provider?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      systemPrompt?: string;
+      apiKey?: string;
+    } = {}
+  ) {
     try {
-      const finalConfig = { ...this.defaultConfig, ...config };
-      
-      const inputData = {
-        sessionId,
-        message,
-        provider: finalConfig.provider,
-        model: finalConfig.model,
-        apiKey: finalConfig.apiKey,
-        systemMessage: finalConfig.systemMessage
-      };
+      // Get session from database
+      const session = await prisma.agentSession.findUnique({
+        where: { id: sessionId },
+      });
 
-      const { stdout, stderr } = await execAsync(
-        `python3 "${this.pythonScriptPath}" '${JSON.stringify(inputData)}'`
-      );
-
-      if (stderr) {
-        console.error('Python script stderr:', stderr);
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
       }
 
-      const result = JSON.parse(stdout.trim());
-      
-      if (result.error) {
-        throw new Error(result.error);
+      // Use provided options or session defaults
+      const provider = options.provider || session.provider || this.defaultProvider;
+      const model = options.model || session.model || this.defaultModel;
+      const temperature = options.temperature || session.temperature || 0.7;
+      const maxTokens = options.maxTokens || session.maxTokens || 1024;
+      const normalizedModel = this.normalizeModelName(model, provider);
+
+      // Create provider instance
+      const llmProvider = this.createProvider(provider, options.apiKey);
+
+      // Create agent orchestrator
+      const orchestrator = createAgentOrchestrator(llmProvider);
+
+      // Get conversation history
+      const messages = await prisma.chatMessage.findMany({
+        where: { sessionId },
+        orderBy: { timestamp: 'asc' },
+        take: 20, // Limit to last 20 messages
+      });
+
+      // Format messages for the LLM
+      const formattedMessages = messages.map(msg => ({
+        role: msg.role as 'user' | 'assistant' | 'system',
+        content: msg.content,
+      }));
+
+      // Add system prompt if provided
+      if (options.systemPrompt) {
+        formattedMessages.unshift({
+          role: 'system',
+          content: options.systemPrompt,
+        });
       }
 
-      return result.response;
+      // Add user message
+      formattedMessages.push({
+        role: 'user',
+        content: message,
+      });
+
+      // Call the LLM
+      const response = await llmProvider.chat(formattedMessages, {
+        model: normalizedModel,
+        temperature,
+        maxTokens,
+      });
+
+      // Save user message to database
+      await prisma.chatMessage.create({
+        data: {
+          sessionId,
+          userId: session.userId,
+          role: 'user',
+          content: message,
+          model: normalizedModel,
+          provider,
+        },
+      });
+
+      // Save assistant message to database
+      await prisma.chatMessage.create({
+        data: {
+          sessionId,
+          userId: session.userId,
+          role: 'assistant',
+          content: response.content,
+          model: normalizedModel,
+          provider,
+          tokens: response.usage.completionTokens,
+          metadata: {
+            usage: response.usage,
+            toolCalls: response.toolCalls || [],
+          },
+        },
+      });
+
+      // Update session token usage
+      await prisma.agentSession.update({
+        where: { id: sessionId },
+        data: {
+          totalTokens: { increment: response.usage.totalTokens },
+          totalCost: { 
+            increment: llmProvider.calculateCost(normalizedModel, {
+              promptTokens: response.usage.promptTokens,
+              completionTokens: response.usage.completionTokens,
+            }),
+          },
+        },
+      });
+
+      return response.content;
     } catch (error) {
-      console.error('Error calling Python LLM script:', error);
-      throw new Error('Failed to get AI response');
+      console.error('Error sending chat message:', error);
+      throw error;
     }
   }
 
   /**
-   * Generate code analysis
+   * Stream a chat message to the LLM
    */
-  async analyzeCode(
+  async *streamChatMessage(
     sessionId: string,
-    code: string,
-    language: string,
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
-    const analysisPrompt = `Analyze this ${language} code and provide:
-1. Code quality assessment
-2. Potential issues or bugs
-3. Performance considerations
-4. Suggestions for improvement
-5. Security concerns (if any)
+    message: string,
+    options: {
+      provider?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      systemPrompt?: string;
+      apiKey?: string;
+    } = {}
+  ) {
+    try {
+      // Get session from database
+      const session = await prisma.agentSession.findUnique({
+        where: { id: sessionId },
+      });
 
-Code:
-\`\`\`${language}
-${code}
-\`\`\``;
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
 
-    return this.sendChatMessage(sessionId, analysisPrompt, config);
+      // Use provided options or session defaults
+      const provider = options.provider || session.provider || this.defaultProvider;
+      const model = options.model || session.model || this.defaultModel;
+      const temperature = options.temperature || session.temperature || 0.7;
+      const maxTokens = options.maxTokens || session.maxTokens || 1024;
+      const normalizedModel = this.normalizeModelName(model, provider);
+
+      // Create provider instance
+      const llmProvider = this.createProvider(provider, options.apiKey);
+
+      // Get conversation history
+      const messages = await prisma.chatMessage.findMany({
+        where: { sessionId },
+        orderBy: { timestamp: 'asc' },
+        take: 20, // Limit to last 20 messages
+      });
+
+      // Format messages for the LLM
+      const formattedMessages = messages.map(msg => ({
+        role: msg.role as 'user' | 'assistant' | 'system',
+        content: msg.content,
+      }));
+
+      // Add system prompt if provided
+      if (options.systemPrompt) {
+        formattedMessages.unshift({
+          role: 'system',
+          content: options.systemPrompt,
+        });
+      }
+
+      // Add user message
+      formattedMessages.push({
+        role: 'user',
+        content: message,
+      });
+
+      // Save user message to database
+      await prisma.chatMessage.create({
+        data: {
+          sessionId,
+          userId: session.userId,
+          role: 'user',
+          content: message,
+          model: normalizedModel,
+          provider,
+        },
+      });
+
+      // Stream response from LLM
+      let fullContent = '';
+      let usage = {
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+      };
+      let toolCalls: any[] = [];
+
+      for await (const chunk of llmProvider.stream(formattedMessages, {
+        model: normalizedModel,
+        temperature,
+        maxTokens,
+      })) {
+        if (chunk.delta) {
+          fullContent += chunk.delta;
+          yield { delta: chunk.delta };
+        }
+
+        if (chunk.toolCalls) {
+          toolCalls = [...toolCalls, ...chunk.toolCalls];
+          yield { toolCalls: chunk.toolCalls };
+        }
+
+        if (chunk.usage) {
+          usage = chunk.usage;
+          yield { usage };
+        }
+      }
+
+      // Save assistant message to database
+      await prisma.chatMessage.create({
+        data: {
+          sessionId,
+          userId: session.userId,
+          role: 'assistant',
+          content: fullContent,
+          model: normalizedModel,
+          provider,
+          tokens: usage.completionTokens,
+          metadata: {
+            usage,
+            toolCalls,
+          },
+        },
+      });
+
+      // Update session token usage
+      await prisma.agentSession.update({
+        where: { id: sessionId },
+        data: {
+          totalTokens: { increment: usage.totalTokens },
+          totalCost: { 
+            increment: llmProvider.calculateCost(normalizedModel, {
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+            }),
+          },
+        },
+      });
+
+      return fullContent;
+    } catch (error) {
+      console.error('Error streaming chat message:', error);
+      throw error;
+    }
   }
 
   /**
@@ -181,138 +350,110 @@ ${code}
     sessionId: string,
     requirements: string,
     language: string,
-    context?: string,
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
-    let prompt = `Generate ${language} code based on these requirements:
-${requirements}`;
+    context?: string
+  ) {
+    const systemPrompt = `You are an expert software developer specializing in ${language}. 
+Your task is to generate high-quality, production-ready code based on the requirements provided.
+Follow these guidelines:
+- Write clean, efficient, and well-documented code
+- Include appropriate error handling
+- Follow best practices for ${language}
+- Provide explanations for complex sections
+- Consider edge cases and performance implications
 
-    if (context) {
-      prompt += `\n\nContext:\n${context}`;
+${context ? `Additional context: ${context}` : ''}`;
+
+    const message = `Generate ${language} code for the following requirements:
+
+${requirements}
+
+Please provide only the code with minimal explanations. Include comments where necessary to explain complex logic.`;
+
+    return this.sendChatMessage(sessionId, message, { systemPrompt });
+  }
+
+  /**
+   * Analyze code
+   */
+  async analyzeCode(
+    sessionId: string,
+    code: string,
+    language: string
+  ) {
+    const systemPrompt = `You are an expert code reviewer specializing in ${language}.
+Your task is to analyze the provided code and provide constructive feedback.
+Focus on:
+- Code quality and readability
+- Potential bugs or edge cases
+- Performance considerations
+- Security vulnerabilities
+- Best practices and design patterns
+- Suggestions for improvement`;
+
+    const message = `Please analyze the following ${language} code:
+
+\`\`\`${language}
+${code}
+\`\`\`
+
+Provide a comprehensive analysis with specific suggestions for improvement.`;
+
+    return this.sendChatMessage(sessionId, message, { systemPrompt });
+  }
+
+  /**
+   * Create a new chat session
+   */
+  async createSession(
+    userId: string,
+    options: {
+      provider?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    } = {}
+  ) {
+    try {
+      const session = await prisma.agentSession.create({
+        data: {
+          userId,
+          provider: options.provider || this.defaultProvider,
+          model: options.model || this.defaultModel,
+          temperature: options.temperature || 0.7,
+          maxTokens: options.maxTokens || 1024,
+        },
+      });
+
+      return session.id;
+    } catch (error) {
+      console.error('Error creating session:', error);
+      throw error;
     }
-
-    prompt += `\n\nProvide clean, well-commented, production-ready code.`;
-
-    return this.sendChatMessage(sessionId, prompt, config);
   }
 
   /**
-   * Debug code and suggest fixes
+   * Get available models for a provider
    */
-  async debugCode(
-    sessionId: string,
-    code: string,
-    error: string,
-    language: string,
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
-    const debugPrompt = `Debug this ${language} code that's producing the following error:
-
-Error: ${error}
-
-Code:
-\`\`\`${language}
-${code}
-\`\`\`
-
-Please:
-1. Identify the root cause of the error
-2. Explain why it's happening
-3. Provide the corrected code
-4. Suggest best practices to avoid similar issues`;
-
-    return this.sendChatMessage(sessionId, debugPrompt, config);
-  }
-
-  /**
-   * Generate documentation
-   */
-  async generateDocumentation(
-    sessionId: string,
-    code: string,
-    language: string,
-    docType: 'api' | 'readme' | 'comments' | 'technical',
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
-    const docPrompt = `Generate ${docType} documentation for this ${language} code:
-
-\`\`\`${language}
-${code}
-\`\`\`
-
-Make the documentation comprehensive, clear, and professional.`;
-
-    return this.sendChatMessage(sessionId, docPrompt, config);
-  }
-
-  /**
-   * Refactor code
-   */
-  async refactorCode(
-    sessionId: string,
-    code: string,
-    language: string,
-    goals: string[],
-    config?: Partial<LLMConfig>
-  ): Promise<string> {
-    const refactorPrompt = `Refactor this ${language} code with these goals:
-${goals.map(goal => `- ${goal}`).join('\n')}
-
-Original code:
-\`\`\`${language}
-${code}
-\`\`\`
-
-Provide the refactored code with explanations of the changes made.`;
-
-    return this.sendChatMessage(sessionId, refactorPrompt, config);
-  }
-
-  /**
-   * Update LLM configuration for a session
-   */
-  updateConfig(sessionId: string, config: Partial<LLMConfig>): void {
-    // For Python-based implementation, configuration is passed per request
-    console.log(`Configuration updated for session ${sessionId}:`, config);
-  }
-
-  /**
-   * Get available models
-   */
-  getAvailableModels(): Record<string, string[]> {
-    return {
-      openai: [
-        'gpt-4o',
-        'gpt-4o-mini', 
-        'gpt-4',
-        'gpt-4.1',
-        'gpt-4.1-mini',
-        'o1',
-        'o1-mini'
-      ],
-      anthropic: [
-        'claude-3-5-sonnet-20241022',
-        'claude-3-5-haiku-20241022',
-        'claude-3-7-sonnet-20250219',
-        'claude-4-sonnet-20250514'
-      ],
-      gemini: [
-        'gemini-2.0-flash',
-        'gemini-1.5-pro',
-        'gemini-1.5-flash',
-        'gemini-2.5-flash'
-      ]
-    };
-  }
-
-  /**
-   * Clear chat history for a session
-   */
-  clearSession(sessionId: string): void {
-    console.log(`Session cleared: ${sessionId}`);
-    // For Python-based implementation, session management is handled by the Python script
+  async getAvailableModels(provider: string, apiKey?: string) {
+    try {
+      const llmProvider = this.createProvider(provider, apiKey);
+      
+      if (provider === 'openrouter' && llmProvider instanceof OpenRouterProvider) {
+        return await llmProvider.fetchAvailableModels();
+      } else {
+        return llmProvider.getAvailableModels().map(model => ({
+          id: model,
+          name: model,
+          provider,
+        }));
+      }
+    } catch (error) {
+      console.error('Error getting available models:', error);
+      return [];
+    }
   }
 }
 
 // Export singleton instance
 export const llmService = new LLMService();
+

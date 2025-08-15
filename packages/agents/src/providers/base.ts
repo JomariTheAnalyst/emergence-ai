@@ -1,12 +1,29 @@
-import { z } from 'zod';
+/**
+ * Base types and interfaces for LLM providers
+ */
 
-// Base interfaces and types for LLM providers
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   name?: string;
-  toolCalls?: ToolCall[];
   toolCallId?: string;
+}
+
+export interface LLMConfig {
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stop?: string[];
+  tools?: any[];
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
 }
 
 export interface ToolCall {
@@ -20,130 +37,131 @@ export interface ToolCall {
 
 export interface LLMResponse {
   content: string;
-  usage: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
+  usage: TokenUsage;
   model: string;
-  finishReason: 'stop' | 'length' | 'tool_calls' | 'content_filter';
+  finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter';
   toolCalls?: ToolCall[];
 }
 
 export interface StreamChunk {
   delta: string;
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-  finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter';
   toolCalls?: ToolCall[];
+  finishReason?: 'stop' | 'length' | 'tool_calls' | 'content_filter';
+  usage?: TokenUsage;
 }
 
-export interface LLMConfig {
-  model: string;
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
-  frequencyPenalty?: number;
-  presencePenalty?: number;
-  stop?: string[];
-  tools?: ToolDefinition[];
-}
-
-export interface ToolDefinition {
-  type: 'function';
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: 'object';
-      properties: Record<string, any>;
-      required?: string[];
-    };
+/**
+ * Provider pricing configuration
+ */
+export interface ProviderPricing {
+  [model: string]: {
+    prompt: number;  // Cost per 1K tokens for prompt
+    completion: number;  // Cost per 1K tokens for completion
   };
 }
 
-// Provider pricing configuration
-export interface ProviderPricing {
-  inputTokenPrice: number;  // per 1K tokens
-  outputTokenPrice: number; // per 1K tokens
-  currency: 'USD';
-}
-
-export const PROVIDER_PRICING: Record<string, Record<string, ProviderPricing>> = {
-  gemini: {
-    'gemini-1.5-pro': { inputTokenPrice: 0.00125, outputTokenPrice: 0.005, currency: 'USD' },
-    'gemini-1.5-flash': { inputTokenPrice: 0.000075, outputTokenPrice: 0.0003, currency: 'USD' },
-    'gemini-1.5-flash-8b': { inputTokenPrice: 0.0000375, outputTokenPrice: 0.00015, currency: 'USD' },
-  },
-  openrouter: {
-    'anthropic/claude-3.5-sonnet': { inputTokenPrice: 0.003, outputTokenPrice: 0.015, currency: 'USD' },
-    'openai/gpt-4o': { inputTokenPrice: 0.005, outputTokenPrice: 0.015, currency: 'USD' },
-    'openai/gpt-4o-mini': { inputTokenPrice: 0.00015, outputTokenPrice: 0.0006, currency: 'USD' },
-    'meta-llama/llama-3.2-90b-vision-instruct': { inputTokenPrice: 0.0009, outputTokenPrice: 0.0009, currency: 'USD' },
-  }
-};
-
+/**
+ * Base class for LLM providers
+ */
 export abstract class BaseLLMProvider {
   protected apiKey: string;
-  protected baseURL?: string;
+  protected baseURL: string;
+  protected pricing: ProviderPricing;
 
-  constructor(apiKey: string, baseURL?: string) {
+  constructor(apiKey: string, baseURL: string) {
     this.apiKey = apiKey;
     this.baseURL = baseURL;
+    this.pricing = this.getDefaultPricing();
   }
 
+  /**
+   * Get provider name
+   */
   abstract getName(): string;
+
+  /**
+   * Get available models for this provider
+   */
   abstract getAvailableModels(): string[];
+
+  /**
+   * Send a chat message to the LLM
+   */
   abstract chat(messages: LLMMessage[], config: LLMConfig): Promise<LLMResponse>;
+
+  /**
+   * Stream a chat message from the LLM
+   */
   abstract stream(messages: LLMMessage[], config: LLMConfig): AsyncGenerator<StreamChunk>;
-  
-  // Calculate cost based on usage
+
+  /**
+   * Get default pricing for this provider
+   */
+  protected getDefaultPricing(): ProviderPricing {
+    // Default pricing - should be overridden by specific providers
+    return {
+      'default': {
+        prompt: 0.001,
+        completion: 0.002,
+      },
+    };
+  }
+
+  /**
+   * Calculate cost for token usage
+   */
   calculateCost(model: string, usage: { promptTokens: number; completionTokens: number }): number {
-    const providerPricing = PROVIDER_PRICING[this.getName()]?.[model];
-    if (!providerPricing) return 0;
-
-    const inputCost = (usage.promptTokens / 1000) * providerPricing.inputTokenPrice;
-    const outputCost = (usage.completionTokens / 1000) * providerPricing.outputTokenPrice;
+    const pricing = this.pricing[model] || this.pricing['default'];
     
-    return inputCost + outputCost;
-  }
-
-  // Validate model availability
-  validateModel(model: string): boolean {
-    return this.getAvailableModels().includes(model);
+    if (!pricing) {
+      return 0;
+    }
+    
+    const promptCost = (usage.promptTokens / 1000) * pricing.prompt;
+    const completionCost = (usage.completionTokens / 1000) * pricing.completion;
+    
+    return promptCost + completionCost;
   }
 }
 
-// Utility functions
+/**
+ * Format messages for LLM providers
+ * This handles special cases like combining consecutive messages from the same role
+ */
 export function formatMessages(messages: LLMMessage[]): LLMMessage[] {
-  return messages.filter(msg => msg.content.trim().length > 0);
-}
-
-export function countTokens(text: string): number {
-  // Simple token estimation (rough approximation)
-  return Math.ceil(text.length / 4);
-}
-
-export function truncateContext(messages: LLMMessage[], maxTokens: number): LLMMessage[] {
-  const systemMessages = messages.filter(m => m.role === 'system');
-  const otherMessages = messages.filter(m => m.role !== 'system');
+  const formattedMessages: LLMMessage[] = [];
   
-  let totalTokens = systemMessages.reduce((sum, msg) => sum + countTokens(msg.content), 0);
-  const result = [...systemMessages];
-  
-  // Add messages from the end (most recent first)
-  for (let i = otherMessages.length - 1; i >= 0; i--) {
-    const msgTokens = countTokens(otherMessages[i].content);
-    if (totalTokens + msgTokens <= maxTokens) {
-      result.unshift(otherMessages[i]);
-      totalTokens += msgTokens;
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i];
+    
+    // Skip empty messages
+    if (!message.content.trim()) continue;
+    
+    // Special handling for tool messages
+    if (message.role === 'tool') {
+      formattedMessages.push(message);
+      continue;
+    }
+    
+    // Check if we can combine with the previous message
+    const prevMessage = formattedMessages[formattedMessages.length - 1];
+    
+    if (
+      prevMessage && 
+      prevMessage.role === message.role && 
+      !prevMessage.name && 
+      !message.name &&
+      !prevMessage.toolCallId &&
+      !message.toolCallId
+    ) {
+      // Combine with previous message
+      prevMessage.content += '\n\n' + message.content;
     } else {
-      break;
+      // Add as a new message
+      formattedMessages.push({ ...message });
     }
   }
   
-  return result;
+  return formattedMessages;
 }
+
