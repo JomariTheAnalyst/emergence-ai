@@ -1,493 +1,570 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { motion } from 'framer-motion';
+import React, { useState, useEffect, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
-  FolderIcon, 
-  DocumentIcon, 
-  CodeBracketIcon,
-  PhotoIcon,
-  PlusIcon,
-  TrashIcon,
-  PencilIcon,
-  MagnifyingGlassIcon,
-  ArrowPathIcon,
-  FolderPlusIcon
-} from '@heroicons/react/24/outline';
-import { useWebSocket } from '@/providers/WebSocketProvider';
+  Folder, 
+  File, 
+  FolderOpen, 
+  Plus, 
+  MoreHorizontal,
+  Search,
+  RefreshCw,
+  Upload,
+  Download,
+  Edit3,
+  Trash2,
+  Copy,
+  Scissors,
+  Eye,
+  Settings
+} from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
+import { cn, formatBytes, formatDate } from '@/lib/utils';
+import { FileEditor } from './FileEditor';
+import { FileContextMenu } from './FileContextMenu';
+import { useFiles } from '@/hooks/useFiles';
 
-interface FileSystemItem {
+interface FileItem {
   name: string;
   type: 'file' | 'directory';
   path: string;
-  size?: number;
-  modified?: Date;
-  children?: FileSystemItem[];
+  size: number;
+  modified: string;
+  children?: FileItem[];
+  expanded?: boolean;
 }
 
-interface FileContent {
+interface FileTab {
+  id: string;
+  name: string;
+  path: string;
   content: string;
   language: string;
+  modified: boolean;
+  saved: boolean;
 }
 
 export function FileExplorer() {
-  const [currentPath, setCurrentPath] = useState('/tmp/shadow-workspace');
-  const [items, setItems] = useState<FileSystemItem[]>([]);
-  const [selectedItem, setSelectedItem] = useState<FileSystemItem | null>(null);
-  const [fileContent, setFileContent] = useState<FileContent | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [openTabs, setOpenTabs] = useState<FileTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCreating, setIsCreating] = useState(false);
-  const [newItemName, setNewItemName] = useState('');
-  const [newItemType, setNewItemType] = useState<'file' | 'directory'>('file');
-  const { isConnected, sendMessage } = useWebSocket();
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [contextMenuPath, setContextMenuPath] = useState<string | null>(null);
+  const [workspaceDir] = useState('/tmp/shadow-workspace');
+  const [showHidden, setShowHidden] = useState(false);
+  const [viewMode, setViewMode] = useState<'tree' | 'list'>('tree');
 
-  // Mock file system data for demo
-  const mockFileSystem: FileSystemItem[] = [
-    {
-      name: 'src',
-      type: 'directory',
-      path: '/tmp/shadow-workspace/src',
-      children: [
-        { name: 'components', type: 'directory', path: '/tmp/shadow-workspace/src/components' },
-        { name: 'utils', type: 'directory', path: '/tmp/shadow-workspace/src/utils' },
-        { name: 'index.ts', type: 'file', path: '/tmp/shadow-workspace/src/index.ts', size: 1024 },
-        { name: 'app.ts', type: 'file', path: '/tmp/shadow-workspace/src/app.ts', size: 2048 }
-      ]
-    },
-    {
-      name: 'package.json',
-      type: 'file',
-      path: '/tmp/shadow-workspace/package.json',
-      size: 512,
-      modified: new Date()
-    },
-    {
-      name: 'README.md',
-      type: 'file',
-      path: '/tmp/shadow-workspace/README.md',
-      size: 1536,
-      modified: new Date()
-    },
-    {
-      name: 'tsconfig.json',
-      type: 'file',
-      path: '/tmp/shadow-workspace/tsconfig.json',
-      size: 256,
-      modified: new Date()
-    }
-  ];
+  const {
+    loadDirectory,
+    readFile,
+    writeFile,
+    createFile,
+    createDirectory,
+    deleteFile,
+    moveFile,
+    copyFile,
+    searchFiles,
+    watchFile,
+    loading,
+    error,
+  } = useFiles();
 
+  // Load initial directory structure
   useEffect(() => {
-    loadDirectory(currentPath);
-  }, [currentPath]);
+    loadDirectoryStructure(workspaceDir);
+  }, [workspaceDir, showHidden]);
 
-  const loadDirectory = async (path: string) => {
-    setIsLoading(true);
-    
+  const loadDirectoryStructure = useCallback(async (path: string) => {
     try {
-      // For demo, use mock data
-      if (path === '/tmp/shadow-workspace') {
-        setItems(mockFileSystem);
-      } else {
-        // Find children for subdirectories
-        const pathParts = path.replace('/tmp/shadow-workspace/', '').split('/');
-        let currentItems = mockFileSystem;
-        
-        for (const part of pathParts) {
-          const item = currentItems.find(i => i.name === part && i.type === 'directory');
-          if (item && item.children) {
-            currentItems = item.children;
+      const items = await loadDirectory(path, true, showHidden);
+      const fileTree = buildFileTree(items, path);
+      setFiles(fileTree);
+    } catch (err) {
+      console.error('Failed to load directory:', err);
+    }
+  }, [loadDirectory, showHidden]);
+
+  const buildFileTree = (items: any[], basePath: string): FileItem[] => {
+    const tree: FileItem[] = [];
+    const pathMap = new Map<string, FileItem>();
+
+    // Sort items: directories first, then files
+    items.sort((a, b) => {
+      if (a.type === b.type) {
+        return a.name.localeCompare(b.name);
+      }
+      return a.type === 'directory' ? -1 : 1;
+    });
+
+    items.forEach(item => {
+      const fullPath = `${basePath}/${item.name}`.replace(/\/+/g, '/');
+      const fileItem: FileItem = {
+        ...item,
+        path: fullPath,
+        children: item.type === 'directory' ? [] : undefined,
+        expanded: false,
+      };
+
+      pathMap.set(fullPath, fileItem);
+      
+      // Find parent directory
+      const parentPath = fullPath.substring(0, fullPath.lastIndexOf('/'));
+      const parent = pathMap.get(parentPath);
+      
+      if (parent && parent.children) {
+        parent.children.push(fileItem);
+      } else if (parentPath === basePath || parentPath === '') {
+        tree.push(fileItem);
+      }
+    });
+
+    return tree;
+  };
+
+  const toggleDirectory = async (path: string) => {
+    const updateExpansion = (items: FileItem[]): FileItem[] => {
+      return items.map(item => {
+        if (item.path === path && item.type === 'directory') {
+          if (!item.expanded && (!item.children || item.children.length === 0)) {
+            // Load directory contents
+            loadDirectory(path, false, showHidden)
+              .then(subItems => {
+                const subFileTree = buildFileTree(subItems, path);
+                setFiles(prev => updateChildren(prev, path, subFileTree));
+              })
+              .catch(console.error);
           }
+          return { ...item, expanded: !item.expanded };
         }
-        
-        setItems(currentItems);
+        if (item.children) {
+          return { ...item, children: updateExpansion(item.children) };
+        }
+        return item;
+      });
+    };
+
+    setFiles(updateExpansion);
+  };
+
+  const updateChildren = (items: FileItem[], targetPath: string, newChildren: FileItem[]): FileItem[] => {
+    return items.map(item => {
+      if (item.path === targetPath) {
+        return { ...item, children: newChildren, expanded: true };
       }
-      
-      // Send request via WebSocket if connected
-      if (isConnected) {
-        sendMessage({
-          type: 'file_list',
-          payload: { path }
+      if (item.children) {
+        return { ...item, children: updateChildren(item.children, targetPath, newChildren) };
+      }
+      return item;
+    });
+  };
+
+  const openFile = async (filePath: string) => {
+    // Check if file is already open
+    const existingTab = openTabs.find(tab => tab.path === filePath);
+    if (existingTab) {
+      setActiveTabId(existingTab.id);
+      return;
+    }
+
+    try {
+      const result = await readFile(filePath);
+      if (result.success) {
+        const fileExtension = filePath.split('.').pop() || '';
+        const language = getLanguageFromExtension(fileExtension);
+        
+        const newTab: FileTab = {
+          id: `tab_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          name: filePath.split('/').pop() || 'Untitled',
+          path: filePath,
+          content: result.data?.content || '',
+          language,
+          modified: false,
+          saved: true,
+        };
+
+        setOpenTabs(prev => [...prev, newTab]);
+        setActiveTabId(newTab.id);
+
+        // Start watching for file changes
+        watchFile(filePath, (newContent) => {
+          setOpenTabs(prev => prev.map(tab => 
+            tab.path === filePath 
+              ? { ...tab, content: newContent, saved: true, modified: false }
+              : tab
+          ));
         });
       }
-      
-    } catch (error) {
-      console.error('Error loading directory:', error);
-    } finally {
-      setIsLoading(false);
+    } catch (err) {
+      console.error('Failed to open file:', err);
     }
   };
 
-  const handleItemClick = async (item: FileSystemItem) => {
-    setSelectedItem(item);
-    
-    if (item.type === 'directory') {
-      setCurrentPath(item.path);
-    } else {
-      // Load file content
-      setIsLoading(true);
-      
-      try {
-        // Mock file content for demo
-        const mockContent = `// ${item.name}
-// This is a demo file content
-// File path: ${item.path}
+  const closeTab = (tabId: string) => {
+    const tab = openTabs.find(t => t.id === tabId);
+    if (tab?.modified) {
+      const confirmed = window.confirm('File has unsaved changes. Close anyway?');
+      if (!confirmed) return;
+    }
 
-export default function ${item.name.replace(/\.[^/.]+$/, "")}() {
-  console.log('Hello from ${item.name}');
-  
-  return {
-    message: 'This is mock content for demonstration',
-    timestamp: new Date().toISOString(),
-    features: [
-      'File reading',
-      'Code syntax highlighting', 
-      'Real-time editing',
-      'Auto-save functionality'
-    ]
+    const newTabs = openTabs.filter(t => t.id !== tabId);
+    setOpenTabs(newTabs);
+
+    if (activeTabId === tabId) {
+      setActiveTabId(newTabs.length > 0 ? newTabs[newTabs.length - 1].id : null);
+    }
   };
-}`;
 
-        setFileContent({
-          content: mockContent,
-          language: getLanguageFromExtension(item.name)
-        });
-        
-        // Send file read request via WebSocket
-        if (isConnected) {
-          sendMessage({
-            type: 'file_read',
-            payload: { path: item.path }
-          });
-        }
-        
-      } catch (error) {
-        console.error('Error reading file:', error);
-      } finally {
-        setIsLoading(false);
+  const saveFile = async (tabId: string) => {
+    const tab = openTabs.find(t => t.id === tabId);
+    if (!tab) return;
+
+    try {
+      const result = await writeFile(tab.path, tab.content);
+      if (result.success) {
+        setOpenTabs(prev => prev.map(t => 
+          t.id === tabId 
+            ? { ...t, modified: false, saved: true }
+            : t
+        ));
       }
+    } catch (err) {
+      console.error('Failed to save file:', err);
     }
   };
 
-  const getLanguageFromExtension = (filename: string): string => {
-    const ext = filename.split('.').pop()?.toLowerCase();
-    switch (ext) {
-      case 'ts': case 'tsx': return 'typescript';
-      case 'js': case 'jsx': return 'javascript';
-      case 'py': return 'python';
-      case 'json': return 'json';
-      case 'md': return 'markdown';
-      case 'css': return 'css';
-      case 'html': return 'html';
-      case 'sql': return 'sql';
-      default: return 'text';
+  const saveAllFiles = async () => {
+    const unsavedTabs = openTabs.filter(tab => tab.modified);
+    for (const tab of unsavedTabs) {
+      await saveFile(tab.id);
     }
   };
 
-  const getFileIcon = (item: FileSystemItem) => {
-    if (item.type === 'directory') {
-      return <FolderIcon className="h-5 w-5 text-blue-500" />;
-    }
-    
-    const ext = item.name.split('.').pop()?.toLowerCase();
-    switch (ext) {
-      case 'ts': case 'tsx': case 'js': case 'jsx': case 'py':
-        return <CodeBracketIcon className="h-5 w-5 text-green-500" />;
-      case 'png': case 'jpg': case 'jpeg': case 'gif': case 'svg':
-        return <PhotoIcon className="h-5 w-5 text-purple-500" />;
-      default:
-        return <DocumentIcon className="h-5 w-5 text-gray-400" />;
-    }
+  const onFileContentChange = (tabId: string, content: string) => {
+    setOpenTabs(prev => prev.map(tab => 
+      tab.id === tabId 
+        ? { ...tab, content, modified: true, saved: false }
+        : tab
+    ));
   };
 
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 B';
-    const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-  };
-
-  const navigateUp = () => {
-    const pathParts = currentPath.split('/');
-    if (pathParts.length > 4) { // Don't go above workspace root
-      pathParts.pop();
-      setCurrentPath(pathParts.join('/'));
-    }
-  };
-
-  const handleCreateItem = () => {
-    if (!newItemName.trim()) return;
-    
-    // Mock creating item for demo
-    const newItem: FileSystemItem = {
-      name: newItemName,
-      type: newItemType,
-      path: `${currentPath}/${newItemName}`,
-      size: newItemType === 'file' ? 0 : undefined,
-      modified: new Date()
+  const getLanguageFromExtension = (extension: string): string => {
+    const languageMap: Record<string, string> = {
+      'js': 'javascript',
+      'jsx': 'javascript',
+      'ts': 'typescript',
+      'tsx': 'typescript',
+      'py': 'python',
+      'java': 'java',
+      'cpp': 'cpp',
+      'c': 'c',
+      'cs': 'csharp',
+      'php': 'php',
+      'rb': 'ruby',
+      'go': 'go',
+      'rs': 'rust',
+      'swift': 'swift',
+      'kt': 'kotlin',
+      'scala': 'scala',
+      'html': 'html',
+      'css': 'css',
+      'scss': 'scss',
+      'sass': 'sass',
+      'less': 'less',
+      'json': 'json',
+      'xml': 'xml',
+      'yaml': 'yaml',
+      'yml': 'yaml',
+      'toml': 'toml',
+      'ini': 'ini',
+      'cfg': 'ini',
+      'conf': 'ini',
+      'md': 'markdown',
+      'sql': 'sql',
+      'sh': 'shell',
+      'bash': 'shell',
+      'zsh': 'shell',
+      'fish': 'shell',
+      'ps1': 'powershell',
+      'dockerfile': 'dockerfile',
+      'docker': 'dockerfile',
     };
     
-    setItems(prev => [...prev, newItem]);
-    setNewItemName('');
-    setIsCreating(false);
-    
-    // Send create request via WebSocket
-    if (isConnected) {
-      sendMessage({
-        type: 'file_create',
-        payload: {
-          path: newItem.path,
-          type: newItemType,
-          content: newItemType === 'file' ? '' : undefined
-        }
-      });
-    }
+    return languageMap[extension.toLowerCase()] || 'plaintext';
   };
 
-  const filteredItems = items.filter(item =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const getFileIcon = (item: FileItem) => {
+    if (item.type === 'directory') {
+      return item.expanded ? (
+        <FolderOpen className="h-4 w-4 text-blue-500" />
+      ) : (
+        <Folder className="h-4 w-4 text-blue-600" />
+      );
+    }
+
+    const extension = item.name.split('.').pop()?.toLowerCase();
+    const iconColor = {
+      'js': 'text-yellow-500',
+      'jsx': 'text-cyan-500',
+      'ts': 'text-blue-600',
+      'tsx': 'text-cyan-600',
+      'py': 'text-green-600',
+      'java': 'text-orange-600',
+      'cpp': 'text-blue-700',
+      'c': 'text-blue-700',
+      'html': 'text-orange-500',
+      'css': 'text-blue-500',
+      'json': 'text-green-500',
+      'md': 'text-gray-600',
+    }[extension || ''] || 'text-gray-500';
+
+    return <File className={cn("h-4 w-4", iconColor)} />;
+  };
+
+  const renderFileTree = (items: FileItem[], depth = 0): React.ReactNode => {
+    return items.map((item) => (
+      <motion.div
+        key={item.path}
+        initial={{ opacity: 0, x: -10 }}
+        animate={{ opacity: 1, x: 0 }}
+        className="select-none"
+      >
+        <div
+          className={cn(
+            "flex items-center space-x-2 px-2 py-1 hover:bg-muted rounded cursor-pointer group",
+            selectedPath === item.path && "bg-muted",
+            "text-sm"
+          )}
+          style={{ paddingLeft: `${depth * 16 + 8}px` }}
+          onClick={() => {
+            setSelectedPath(item.path);
+            if (item.type === 'directory') {
+              toggleDirectory(item.path);
+            } else {
+              openFile(item.path);
+            }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setContextMenuPath(item.path);
+          }}
+        >
+          {getFileIcon(item)}
+          <span className="flex-1 truncate">{item.name}</span>
+          
+          <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1">
+            <span className="text-xs text-muted-foreground">
+              {item.type === 'file' && formatBytes(item.size)}
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0"
+              onClick={(e) => {
+                e.stopPropagation();
+                setContextMenuPath(item.path);
+              }}
+            >
+              <MoreHorizontal className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+        
+        {item.type === 'directory' && item.expanded && item.children && (
+          <AnimatePresence>
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              {renderFileTree(item.children, depth + 1)}
+            </motion.div>
+          </AnimatePresence>
+        )}
+      </motion.div>
+    ));
+  };
+
+  const filteredFiles = searchQuery 
+    ? files.filter(file => file.name.toLowerCase().includes(searchQuery.toLowerCase()))
+    : files;
 
   return (
-    <div className="flex h-full bg-shadow-950">
-      {/* File Tree Panel */}
-      <div className="w-1/2 border-r border-shadow-800 flex flex-col">
-        {/* File Explorer Header */}
-        <div className="p-4 border-b border-shadow-800">
+    <div className="flex h-full bg-background">
+      {/* File Tree Sidebar */}
+      <div className="w-80 border-r border-border bg-card/30 flex flex-col">
+        {/* Header */}
+        <div className="p-4 border-b border-border">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-white">File Explorer</h2>
-            <div className="flex space-x-2">
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => loadDirectory(currentPath)}
-                className="p-2 bg-shadow-700 hover:bg-shadow-600 text-white rounded-lg transition-colors"
+            <h2 className="font-semibold text-sm">Files</h2>
+            <div className="flex items-center space-x-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => loadDirectoryStructure(workspaceDir)}
+                className="h-7 w-7 p-0"
                 title="Refresh"
               >
-                <ArrowPathIcon className="h-4 w-4" />
-              </motion.button>
-              <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={() => setIsCreating(true)}
-                className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-                title="Create new file/folder"
+                <RefreshCw className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                title="New File"
               >
-                <PlusIcon className="h-4 w-4" />
-              </motion.button>
+                <Plus className="h-3 w-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 w-7 p-0"
+                title="Settings"
+              >
+                <Settings className="h-3 w-3" />
+              </Button>
             </div>
           </div>
           
-          {/* Search */}
           <div className="relative">
-            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-shadow-400" />
-            <input
-              type="text"
+            <Search className="h-4 w-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search files..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search files..."
-              className="w-full pl-10 pr-4 py-2 bg-shadow-800 border border-shadow-700 rounded-lg text-shadow-100 placeholder-shadow-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="pl-9 h-8 text-sm"
             />
           </div>
         </div>
 
-        {/* Path Navigation */}
-        <div className="px-4 py-2 bg-shadow-900 border-b border-shadow-800">
-          <div className="flex items-center space-x-2 text-sm">
-            <button
-              onClick={navigateUp}
-              className="text-blue-400 hover:text-blue-300 transition-colors"
-            >
-              ↑
-            </button>
-            <span className="text-shadow-400">{currentPath}</span>
-          </div>
-        </div>
-
-        {/* Create New Item Form */}
-        {isCreating && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            className="p-4 bg-shadow-900 border-b border-shadow-800"
-          >
-            <div className="space-y-3">
-              <div className="flex space-x-2">
-                <button
-                  onClick={() => setNewItemType('file')}
-                  className={`px-3 py-1 rounded text-sm transition-colors ${
-                    newItemType === 'file' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-shadow-700 text-shadow-300 hover:bg-shadow-600'
-                  }`}
-                >
-                  File
-                </button>
-                <button
-                  onClick={() => setNewItemType('directory')}
-                  className={`px-3 py-1 rounded text-sm transition-colors ${
-                    newItemType === 'directory' 
-                      ? 'bg-blue-600 text-white' 
-                      : 'bg-shadow-700 text-shadow-300 hover:bg-shadow-600'
-                  }`}
-                >
-                  Folder
-                </button>
-              </div>
-              <input
-                type="text"
-                value={newItemName}
-                onChange={(e) => setNewItemName(e.target.value)}
-                placeholder={`${newItemType === 'file' ? 'File' : 'Folder'} name...`}
-                className="w-full px-3 py-2 bg-shadow-800 border border-shadow-700 rounded text-shadow-100 placeholder-shadow-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                onKeyPress={(e) => e.key === 'Enter' && handleCreateItem()}
-                autoFocus
-              />
-              <div className="flex space-x-2">
-                <button
-                  onClick={handleCreateItem}
-                  disabled={!newItemName.trim()}
-                  className="px-3 py-1 bg-green-600 hover:bg-green-700 disabled:bg-shadow-700 text-white rounded text-sm transition-colors"
-                >
-                  Create
-                </button>
-                <button
-                  onClick={() => { setIsCreating(false); setNewItemName(''); }}
-                  className="px-3 py-1 bg-shadow-700 hover:bg-shadow-600 text-white rounded text-sm transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
+        {/* File Tree */}
+        <div className="flex-1 overflow-y-auto p-2">
+          {loading ? (
+            <div className="flex items-center justify-center py-8">
+              <RefreshCw className="h-4 w-4 animate-spin mr-2" />
+              <span className="text-sm text-muted-foreground">Loading files...</span>
             </div>
-          </motion.div>
-        )}
-
-        {/* File List */}
-        <div className="flex-1 overflow-y-auto">
-          {isLoading ? (
-            <div className="p-4 text-center">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-              <p className="text-shadow-400 mt-2">Loading...</p>
+          ) : error ? (
+            <div className="text-sm text-destructive p-4">
+              Error: {error}
+            </div>
+          ) : filteredFiles.length === 0 ? (
+            <div className="text-sm text-muted-foreground p-4 text-center">
+              No files found
             </div>
           ) : (
-            <div className="p-2">
-              {filteredItems.map((item) => (
+            renderFileTree(filteredFiles)
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="p-2 border-t border-border text-xs text-muted-foreground">
+          <div className="flex items-center justify-between">
+            <span>{filteredFiles.length} items</span>
+            <div className="flex items-center space-x-2">
+              <button
+                onClick={() => setShowHidden(!showHidden)}
+                className={cn(
+                  "px-2 py-1 rounded hover:bg-muted",
+                  showHidden && "bg-muted"
+                )}
+              >
+                {showHidden ? 'Hide hidden' : 'Show hidden'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Editor Area */}
+      <div className="flex-1 flex flex-col">
+        {/* Tab Bar */}
+        {openTabs.length > 0 && (
+          <div className="border-b border-border bg-card/30">
+            <div className="flex items-center overflow-x-auto">
+              {openTabs.map((tab) => (
                 <motion.div
-                  key={item.path}
-                  whileHover={{ backgroundColor: 'rgba(51, 65, 85, 0.5)' }}
-                  onClick={() => handleItemClick(item)}
-                  className={`flex items-center space-x-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                    selectedItem?.path === item.path ? 'bg-blue-600/20 border border-blue-500/50' : ''
-                  }`}
-                >
-                  {getFileIcon(item)}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-shadow-100 truncate">
-                      {item.name}
-                    </p>
-                    {item.size !== undefined && (
-                      <p className="text-xs text-shadow-400">
-                        {formatFileSize(item.size)}
-                      </p>
-                    )}
-                  </div>
-                  {item.type === 'directory' && (
-                    <div className="text-shadow-400">→</div>
+                  key={tab.id}
+                  whileHover={{ scale: 1.02 }}
+                  className={cn(
+                    "flex items-center space-x-2 px-4 py-2 border-r border-border cursor-pointer text-sm group min-w-0 flex-shrink-0",
+                    activeTabId === tab.id 
+                      ? "bg-background text-foreground" 
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                   )}
+                  onClick={() => setActiveTabId(tab.id)}
+                >
+                  <File className="h-3 w-3 flex-shrink-0" />
+                  <span className="truncate max-w-32">{tab.name}</span>
+                  {tab.modified && (
+                    <div className="w-2 h-2 bg-primary rounded-full flex-shrink-0" />
+                  )}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeTab(tab.id);
+                    }}
+                    className="opacity-0 group-hover:opacity-100 hover:bg-destructive hover:text-destructive-foreground rounded p-0.5 flex-shrink-0"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
                 </motion.div>
               ))}
               
-              {filteredItems.length === 0 && (
-                <div className="p-8 text-center">
-                  <FolderIcon className="h-12 w-12 text-shadow-600 mx-auto mb-3" />
-                  <p className="text-shadow-400">
-                    {searchQuery ? 'No files found matching your search' : 'This directory is empty'}
-                  </p>
-                </div>
-              )}
+              {/* Actions */}
+              <div className="flex items-center space-x-1 px-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={saveAllFiles}
+                  className="h-7 text-xs"
+                  disabled={!openTabs.some(tab => tab.modified)}
+                >
+                  Save All
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Editor Content */}
+        <div className="flex-1">
+          {activeTabId && openTabs.length > 0 ? (
+            <FileEditor
+              tab={openTabs.find(t => t.id === activeTabId)!}
+              onContentChange={onFileContentChange}
+              onSave={saveFile}
+            />
+          ) : (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center">
+                <File className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                <h3 className="text-lg font-medium text-foreground mb-2">No file open</h3>
+                <p className="text-muted-foreground">
+                  Select a file from the explorer to start editing
+                </p>
+              </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* File Content Panel */}
-      <div className="w-1/2 flex flex-col">
-        {selectedItem ? (
-          <>
-            {/* File Header */}
-            <div className="p-4 border-b border-shadow-800">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-3">
-                  {getFileIcon(selectedItem)}
-                  <div>
-                    <h3 className="text-lg font-semibold text-white">{selectedItem.name}</h3>
-                    <p className="text-sm text-shadow-400">{selectedItem.path}</p>
-                  </div>
-                </div>
-                
-                {selectedItem.type === 'file' && (
-                  <div className="flex space-x-2">
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-                      title="Edit file"
-                    >
-                      <PencilIcon className="h-4 w-4" />
-                    </motion.button>
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="p-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-                      title="Delete file"
-                    >
-                      <TrashIcon className="h-4 w-4" />
-                    </motion.button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* File Content */}
-            <div className="flex-1 overflow-hidden">
-              {selectedItem.type === 'directory' ? (
-                <div className="p-8 text-center">
-                  <FolderIcon className="h-16 w-16 text-blue-500 mx-auto mb-4" />
-                  <h3 className="text-xl font-semibold text-white mb-2">Directory Selected</h3>
-                  <p className="text-shadow-400">
-                    This is a directory. Click to navigate into it or select a file to view its contents.
-                  </p>
-                </div>
-              ) : fileContent ? (
-                <div className="h-full">
-                  <div className="h-full bg-shadow-900 p-4 overflow-auto">
-                    <pre className="text-sm text-shadow-100 font-mono whitespace-pre-wrap">
-                      {fileContent.content}
-                    </pre>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-8 text-center">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-                  <p className="text-shadow-400 mt-2">Loading file content...</p>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <DocumentIcon className="h-16 w-16 text-shadow-600 mx-auto mb-4" />
-              <h3 className="text-xl font-semibold text-white mb-2">No File Selected</h3>
-              <p className="text-shadow-400">
-                Select a file or directory from the left panel to view its contents.
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Context Menu */}
+      {contextMenuPath && (
+        <FileContextMenu
+          filePath={contextMenuPath}
+          onClose={() => setContextMenuPath(null)}
+          onAction={(action) => {
+            // Handle file actions
+            console.log('File action:', action, contextMenuPath);
+            setContextMenuPath(null);
+          }}
+        />
+      )}
     </div>
   );
 }
