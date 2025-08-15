@@ -1,0 +1,36 @@
+{
+  "name": "@shadow/tools",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint .",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shadow/types": "*",
+    "@shadow/db": "*",
+    "@shadow/command-security": "*",
+    "fs-extra": "^11.2.0",
+    "chokidar": "^3.5.3",
+    "glob": "^10.3.0",
+    "mime-types": "^2.1.35",
+    "simple-git": "^3.19.1",
+    "axios": "^1.6.0",
+    "zod": "^3.22.0",
+    "uuid": "^9.0.0",
+    "diff": "^5.1.0",
+    "fast-fuzzy": "^1.12.0"
+  },
+  "devDependencies": {
+    "@shadow/typescript-config": "*",
+    "@types/fs-extra": "^11.0.4",
+    "@types/mime-types": "^2.1.4",
+    "@types/uuid": "^9.0.7",
+    "@types/diff": "^5.0.8",
+    "typescript": "^5.0.0"
+  }
+}
