@@ -1,0 +1,28 @@
+{
+  "name": "@shadow/prompts",
+  "version": "0.0.0",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint .",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@shadow/types": "*",
+    "@shadow/db": "*",
+    "@shadow/tools": "*",
+    "jsdom": "^23.0.0",
+    "zod": "^3.22.0",
+    "handlebars": "^4.7.8",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@shadow/typescript-config": "*",
+    "@types/jsdom": "^21.1.6",
+    "@types/uuid": "^9.0.7",
+    "typescript": "^5.0.0"
+  }
+}
