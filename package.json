@@ -17,7 +17,10 @@
     "db:push:reset": "turbo run db:push:reset",
     "db:studio": "turbo run db:studio",
     "db:migrate:dev": "turbo run db:migrate:dev",
-    "clean": "turbo run clean"
+    "clean": "turbo run clean",
+    "setup:db": "node scripts/setup-database.js",
+    "seed": "node scripts/seed-database.js",
+    "start:dev": "node scripts/start-dev.js"
   },
   "devDependencies": {
     "@turbo/gen": "^1.10.12",
