@@ -3,12 +3,12 @@ generator client {
 }
 
 datasource db {
-  provider = "mongodb"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
 model User {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id        String   @id @default(uuid())
   email     String   @unique
   name      String?
   avatar    String?
@@ -20,12 +20,13 @@ model User {
   tasks        Task[]
   memories     Memory[]
   chatMessages ChatMessage[]
+  agentSessions AgentSession[]
 
   @@map("users")
 }
 
 model Repository {
-  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  id            String   @id @default(uuid())
   name          String
   fullName      String   @unique
   description   String?
@@ -33,43 +34,90 @@ model Repository {
   private       Boolean  @default(false)
   defaultBranch String   @default("main")
   owner         String
+  cloneUrl      String?
+  lastSync      DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   // Relations
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId    String   @db.ObjectId
+  userId    String
   tasks     Task[]
   memories  Memory[]
+  branches  GitBranch[]
+  pullRequests PullRequest[]
 
   @@map("repositories")
 }
 
+model GitBranch {
+  id           String   @id @default(uuid())
+  name         String
+  sha          String
+  isDefault    Boolean  @default(false)
+  isProtected  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String
+
+  @@unique([repositoryId, name])
+  @@map("git_branches")
+}
+
+model PullRequest {
+  id          String   @id @default(uuid())
+  number      Int
+  title       String
+  description String?
+  state       PullRequestState @default(OPEN)
+  baseBranch  String
+  headBranch  String
+  authorId    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  mergedAt    DateTime?
+
+  // Relations
+  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String
+
+  @@unique([repositoryId, number])
+  @@map("pull_requests")
+}
+
 model Task {
-  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  id            String      @id @default(uuid())
   title         String
   description   String?
   status        TaskStatus  @default(PENDING)
   priority      TaskPriority @default(MEDIUM)
   assignedAgent String?
   progress      Int         @default(0)
+  estimatedTime Int?        // in minutes
+  actualTime    Int?        // in minutes
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
   completedAt   DateTime?
 
   // Relations
-  repository   Repository    @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  repositoryId String        @db.ObjectId
+  repository   Repository?   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String?
   user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String        @db.ObjectId
+  userId       String
   logs         TaskLog[]
   chatMessages ChatMessage[]
+  parentTask   Task?         @relation("TaskHierarchy", fields: [parentTaskId], references: [id])
+  parentTaskId String?
+  subtasks     Task[]        @relation("TaskHierarchy")
 
   @@map("tasks")
 }
 
 model TaskLog {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id        String   @id @default(uuid())
   level     LogLevel
   message   String
   metadata  Json?
@@ -77,79 +125,154 @@ model TaskLog {
 
   // Relations
   task   Task   @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  taskId String @db.ObjectId
+  taskId String
 
   @@map("task_logs")
 }
 
 model ChatMessage {
-  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  id        String   @id @default(uuid())
   content   String
-  role      String   // 'user' | 'assistant' | 'system'
+  role      String   // 'user' | 'assistant' | 'system' | 'tool'
   timestamp DateTime @default(now())
   metadata  Json?
+  tokens    Int?     // token count for the message
+  model     String?  // LLM model used
+  provider  String?  // LLM provider used
+  toolCalls ToolCall[]
 
   // Relations
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId String @db.ObjectId
+  userId String
   task   Task?  @relation(fields: [taskId], references: [id], onDelete: Cascade)
-  taskId String? @db.ObjectId
+  taskId String?
+  session AgentSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sessionId String?
 
   @@map("chat_messages")
 }
 
-model Memory {
-  id      String     @id @default(auto()) @map("_id") @db.ObjectId
-  type    MemoryType
-  title   String
-  content String
-  tags    String[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model AgentSession {
+  id          String   @id @default(uuid())
+  name        String?
+  provider    String   // 'gemini' | 'openrouter'
+  model       String   // specific model name
+  temperature Float    @default(0.7)
+  maxTokens   Int      @default(4000)
+  active      Boolean  @default(true)
+  totalTokens Int      @default(0)
+  totalCost   Float    @default(0.0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
-  repository   Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
-  repositoryId String     @db.ObjectId
-  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId       String     @db.ObjectId
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId   String
+  messages ChatMessage[]
+
+  @@map("agent_sessions")
+}
+
+model Memory {
+  id        String     @id @default(uuid())
+  type      MemoryType
+  title     String
+  content   String
+  tags      String[]
+  importance Int        @default(5) // 1-10 scale
+  accessed  Int        @default(0) // access count
+  lastAccess DateTime?
+  embedding Float[]?   // for semantic search
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  // Relations
+  repository   Repository? @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  repositoryId String?
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
 
   @@map("memories")
 }
 
 model ToolCall {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id @default(uuid())
   name       String
   parameters Json
   result     Json?
   error      String?
+  duration   Int?     // execution time in milliseconds
   timestamp  DateTime @default(now())
+
+  // Relations
+  message   ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
 
   @@map("tool_calls")
 }
 
 model FileEmbedding {
-  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  id         String   @id @default(uuid())
   filePath   String
-  content    String
+  content    String   @db.Text
   embedding  Float[]
   repository String
+  language   String?
+  size       Int      @default(0)
+  checksum   String?  // for change detection
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   @@unique([filePath, repository])
+  @@index([repository, language])
   @@map("file_embeddings")
 }
 
 model TerminalSession {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  id          String   @id @default(uuid())
   sessionId   String   @unique
   workingDir  String
   environment Json?
   active      Boolean  @default(true)
+  lastCommand String?
+  commandHistory String[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@map("terminal_sessions")
+}
+
+model PromptTemplate {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  category    String
+  version     String   @default("1.0")
+  content     String   @db.Text
+  variables   Json?    // template variables schema
+  provider    String?  // target LLM provider
+  active      Boolean  @default(true)
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([category, active])
+  @@map("prompt_templates")
+}
+
+model APIUsage {
+  id        String   @id @default(uuid())
+  provider  String   // 'gemini' | 'openrouter'
+  model     String
+  operation String   // 'chat' | 'embedding' | 'tool_call'
+  tokens    Int
+  cost      Float
+  success   Boolean
+  errorCode String?
+  timestamp DateTime @default(now())
+
+  @@index([provider, timestamp])
+  @@index([timestamp])
+  @@map("api_usage")
 }
 
 enum TaskStatus {
